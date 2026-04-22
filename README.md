@@ -1,150 +1,61 @@
 # Xploit
 
-Xploit is a CLI-based web vulnerability scanner for authorized security assessments. It performs bounded crawling, tests high-risk input surfaces, and prints clear findings directly in the terminal.
+![Python](https://img.shields.io/badge/python-3.x-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Version](https://img.shields.io/badge/version-1.0.0-orange.svg)
 
-> Use Xploit only on applications you own or are explicitly authorized to test.
+**Xploit** is a high-performance web vulnerability scanner designed for security professionals and bug bounty hunters. It crawls targets to identify common misconfigurations and security vulnerabilities with speed and precision.
 
-## Features
+---
 
-- Terminal-first workflow with no output files required.
-- Same-origin crawling with configurable depth and page limits.
-- Detailed findings with severity, confidence, CWE, evidence, impact, remediation, and validation guidance.
-- Clean handling for unreachable targets.
-- Universal `xploit` command via Python package entry point.
+## ⚡ Features
+- **High-Performance Scanning:** Efficient multi-threaded crawling.
+- **Coverage:** SQLi, XSS, CSRF, Command Injection, Directory Traversal, and more.
+- **Color-Coded Output:** Easy-to-read terminal interface for quick triage.
+- **Customizable:** Adjust scan depth, speed, and timeout settings.
 
-## Vulnerability Coverage
+---
 
-Xploit checks for:
-
-- SQL Injection
-- Cross-Site Scripting (XSS)
-- Cross-Site Request Forgery (CSRF)
-- Command Injection
-- Directory Traversal
-- Insecure HTTP Headers
-- Broken Authentication
-- Sensitive Data Exposure
-- Open Redirect
-- Security Misconfiguration
-
-## Installation
-
-Clone the repository:
+## 🚀 Installation
 
 ```bash
-git clone https://github.com/<your-username>/Xploit.git
+# Clone the repository
+git clone https://github.com/harshzagade/Xploit.git
 cd Xploit
+
+# Install dependencies
+pip install -r requirements.txt
 ```
 
-Install dependencies:
+---
 
+## 📖 Usage
+
+Simple scan:
 ```bash
-python3 -m pip install -r requirements.txt
+python3 xploit.py https://example.com
 ```
 
-Install as a global CLI command:
-
+Tuned scan:
 ```bash
-python3 -m pip install -e .
+python3 xploit.py https://example.com --depth 2 --max-pages 50
 ```
 
-Verify:
+---
 
-```bash
-xploit --help
-```
-
-## Usage
-
-Scan a target:
-
-```bash
-xploit https://target.example
-```
-
-Tune crawl depth, page count, and timeout:
-
-```bash
-xploit https://target.example --depth 2 --max-pages 40 --timeout 8
-```
-
-Run without installing:
-
-```bash
-python3 xploit.py https://target.example
-python3 -m xploit https://target.example
-```
-
-Interactive prompt:
-
-```bash
-xploit
-```
-
-## CLI Options
-
+## 🖥️ Output Preview
 ```text
-usage: xploit <url> [options]
-
-options:
-  --depth DEPTH         crawl depth inside the same origin
-  --max-pages N         maximum pages to crawl
-  --timeout SECONDS     HTTP timeout per request
-  --no-color            disable ANSI colors
-  --quiet               print compact terminal output
-  -v, --version         show version
-  -h, --help            show help
+  [01] [HIGH] SQL Injection
+       Finding ID     : SQL-01
+       Affected URL   : https://example.com/login.php?id=1
+       Evidence       : ' UNION SELECT null, null --
+       Remediation    : Use parameterized queries/prepared statements.
 ```
 
-## Example Output
+---
 
-```text
-Scan Overview
-------------------------------------------------------------------------
-Target URL        : https://target.example/
-Scan status       : COMPLETED
-Duration          : 5.84s
-Pages crawled     : 2
-Forms discovered  : 1
-Total findings    : 8
-High severity     : 4
-Medium severity   : 4
-Low severity      : 0
+## 📜 Disclaimer
+This tool is for **authorized security assessments only**. Using this tool against targets without prior authorization is illegal. The author assumes no responsibility for any misuse or damage caused.
 
-Detailed Findings
-------------------------------------------------------------------------
-[01] HIGH Missing Content-Security-Policy
-     Finding ID     : HDR-001
-     Category       : Insecure HTTP Headers
-     Confidence     : High
-     Affected URL   : https://target.example/
-     CWE            : CWE-693
-     Evidence       : Response does not include `content-security-policy`.
-     Remediation    : Set a strict `content-security-policy` header.
-```
-
-## Development
-
-Create a virtual environment:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -r requirements.txt
-python3 -m pip install -e .
-```
-
-Validate:
-
-```bash
-python3 -m compileall xploit xploit.py
-xploit --help
-```
-
-## Safety Notes
-
-Xploit uses visible, non-stealth probes and does not attempt persistence, evasion, credential theft, exploit chaining, or destructive actions. Findings should be manually validated before being reported as confirmed vulnerabilities.
-
-## License
-
-MIT License. See [LICENSE](LICENSE).
+## ⚖️ License
+This project is licensed under the **MIT License** - see the [LICENSE](LICENSE) file for details.
