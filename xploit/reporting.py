@@ -7,67 +7,56 @@ from .scanner import Finding, ScanResult, summarize_findings
 
 
 def render_text_report(result: ScanResult) -> str:
-    bold = "\033[1m"
-    reset = "\033[0m"
-    lines: list[str] = []
-    lines.append(f"{bold}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{reset}")
-    lines.append(f"{bold}                            XPLOIT ASSESSMENT REPORT                            {reset}")
-    lines.append(f"{bold}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{reset}")
-    lines.append("")
-    lines.append(f"{bold}[1] ASSESSMENT OVERVIEW{reset}")
-    lines.append(f"    Target URL        : {result.normalized_target}")
-    lines.append(f"    Scan Status       : {result.status.upper()}")
-    lines.append(f"    Scan Mode         : {result.scan_mode.upper()}")
-    lines.append(f"    Scope Prefix      : {result.scope_prefix or '/'}")
-    lines.append(f"    Started At        : {result.started_at}")
-    lines.append(f"    Duration          : {result.duration_seconds}s")
-    lines.append(f"    Pages Crawled     : {len(result.pages_seen)}")
-    lines.append(f"    Forms Discovered  : {result.forms_seen}")
-    lines.append(f"    Checks Executed   : {len(result.checks_run)}")
-    lines.append("")
-    
-    if result.errors:
-        lines.append(f"{bold}[!] SCAN ERRORS{reset}")
-        for error in result.errors[:10]: # Limit to first 10 errors
-            lines.append(f"    - {error}")
-        if len(result.errors) > 10:
-            lines.append(f"    - ... and {len(result.errors) - 10} more errors")
-        lines.append("")
+    bold   = "\033[1m"
+    reset  = "\033[0m"
+    RED    = "\033[91m"
+    YELLOW = "\033[93m"
+    CYAN   = "\033[96m"
+    DIM    = "\033[2m"
+    SEV_COLOR = {"HIGH": RED, "MEDIUM": YELLOW, "LOW": CYAN, "INFO": DIM}
 
+    lines: list[str] = []
+
+    # ── Header ──────────────────────────────────────────────────────────
+    lines.append("")
+    lines.append(f"{bold}Assessment Summary{reset}")
+    lines.append("─" * 50)
+    lines.append(f"Target   : {result.normalized_target}")
+    lines.append(f"Mode     : {result.scan_mode.upper()}  |  Duration : {result.duration_seconds}s")
+    lines.append(f"Crawled  : {len(result.pages_seen)} pages  |  Forms : {result.forms_seen}")
+    lines.append("")
+
+    # ── Summary counts ──────────────────────────────────────────────────
     summary = summarize_findings(result.findings)
-    lines.append(f"{bold}[2] FINDINGS SUMMARY{reset}")
-    lines.append(f"    CRITICAL/HIGH     : {summary['HIGH']}")
-    lines.append(f"    MEDIUM            : {summary['MEDIUM']}")
-    lines.append(f"    LOW               : {summary['LOW']}")
-    lines.append(f"    INFORMATIONAL     : {summary['INFO']}")
+    lines.append(f"{bold}Findings{reset}")
+    lines.append("─" * 50)
+    lines.append(f"  {RED}HIGH{reset}   : {summary['HIGH']}")
+    lines.append(f"  {YELLOW}MEDIUM{reset} : {summary['MEDIUM']}")
+    lines.append(f"  {CYAN}LOW{reset}    : {summary['LOW']}")
+    lines.append(f"  {DIM}INFO{reset}   : {summary['INFO']}")
     lines.append("")
 
     if not result.findings:
         if result.status == "unreachable":
-            lines.append(f"{bold}The assessment could not be completed because the target was unreachable.{reset}")
+            lines.append("Target was unreachable.")
         else:
-            lines.append(f"{bold}No findings were detected during this assessment.{reset}")
+            lines.append("No findings detected.")
         return "\n".join(lines)
 
-    lines.append(f"{bold}[3] DETAILED VULNERABILITY ANALYSIS{reset}")
-    lines.append("    " + "━" * 68)
-    for index, finding in enumerate(sorted(result.findings, key=_finding_sort_key), start=1):
-        lines.append(f"    {bold}ID: {finding.id} | {finding.name}{reset}")
-        lines.append(f"    " + "─" * 68)
-        lines.append(f"    Severity    : {finding.severity}")
-        lines.append(f"    Category    : {finding.category}")
-        lines.append(f"    CWE         : {finding.cwe or 'N/A'}")
-        lines.append(f"    Target      : {finding.method} {finding.url}")
-        if finding.parameter:
-            lines.append(f"    Parameter   : {finding.parameter}")
-        lines.append(f"    Evidence    : {finding.evidence}")
-        lines.append(f"    Description : {finding.impact}")
-        lines.append(f"    Remediation : {finding.remediation}")
-        if finding.trigger:
-            lines.append(f"    Reproducer  : {finding.trigger}")
+    # ── Individual findings ─────────────────────────────────────────────
+    for i, f in enumerate(sorted(result.findings, key=_finding_sort_key), 1):
+        col = SEV_COLOR.get(f.severity, "")
+        lines.append(f"[{i:02d}] {col}{f.severity}{reset}  {bold}{f.name}{reset}")
+        lines.append(f"      URL        : {f.url}")
+        if f.parameter:
+            lines.append(f"      Parameter  : {f.parameter}")
+        lines.append(f"      Evidence   : {f.evidence}")
+        lines.append(f"      Fix        : {f.remediation}")
+        if f.cwe:
+            lines.append(f"      CWE        : {f.cwe}")
         lines.append("")
-    
-    lines.append(f"{bold}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{reset}")
+
+    lines.append("─" * 50)
     return "\n".join(lines).rstrip()
 
 
