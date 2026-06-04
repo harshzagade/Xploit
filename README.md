@@ -297,25 +297,19 @@ xploit/
 
 ---
 
-## 🤝 Contributing
-
-Contributions are welcome! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
-
----
-
-## 📄 License
+##  License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ---
 
-## 🔒 Security
+##  Security
 
 For security concerns or responsible disclosure, see [SECURITY.md](./SECURITY.md).
 
 ---
 
-## 👨‍💻 Author
+##  Author
 
 **Harsh Zagade**
 - GitHub: [@harshzagade](https://github.com/harshzagade)
@@ -323,7 +317,7 @@ For security concerns or responsible disclosure, see [SECURITY.md](./SECURITY.md
 
 ---
 
-## 📚 Additional Resources
+##  Additional Resources
 
 - [Testing Guide](./HOW_TO_TEST.md) - How to test Xploit
 - [Testing Report](./TESTING_REPORT.md) - Verification results
@@ -331,10 +325,8 @@ For security concerns or responsible disclosure, see [SECURITY.md](./SECURITY.md
 
 ---
 
-## ⚖️ Disclaimer
+##  Disclaimer
 
 This tool is provided for educational and authorized security testing purposes only. Users are responsible for complying with applicable laws and obtaining proper authorization before scanning any systems. The author assumes no liability for misuse or damage caused by this tool.
 
 ---
-
-**Built with ❤️ for the cybersecurity community**
