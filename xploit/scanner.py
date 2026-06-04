@@ -226,6 +226,7 @@ class WebScanner:
         from .modules.advanced_injection import AdvancedInjectionModule as NewAdvancedInjection
         from .modules.sensitive_data import SensitiveDataModule
         from .modules.auth_advanced import AdvancedAuthModule
+        from .modules.brute_force import BruteForceModule
 
         modules_to_run = []
         if self.mode in {PASSIVE, FULL}:
@@ -242,6 +243,7 @@ class WebScanner:
                 NewAdvancedInjection(self),
                 LogicVulnerabilityModule(self),
                 AdvancedAuthModule(self),
+                BruteForceModule(self),
             ])
             if self.mode == ACTIVE:
                 modules_to_run.append(ExposureModule(self))

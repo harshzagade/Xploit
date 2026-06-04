@@ -181,40 +181,117 @@ class AdvancedAuthModule(BaseModule):
                             ))
 
     def _check_default_credentials(self):
-        """Check for common default credentials (heuristic)"""
+        """Actually test for common default credentials"""
         login_forms = []
         for form in self.scanner.forms:
             if any('password' in inp_type for inp_type in form.input_types.values()):
                 login_forms.append(form)
 
-        # Common default credentials
+        # Comprehensive default credentials list
         default_creds = [
+            # Admin accounts
             ("admin", "admin"),
             ("admin", "password"),
-            ("root", "root"),
+            ("admin", "12345"),
+            ("admin", "admin123"),
             ("administrator", "administrator"),
+            ("administrator", "password"),
+            # Root accounts
+            ("root", "root"),
+            ("root", "password"),
+            ("root", "toor"),
+            ("root", "12345"),
+            # Database defaults
+            ("sa", ""),  # SQL Server
+            ("postgres", "postgres"),
+            ("mysql", "mysql"),
+            ("oracle", "oracle"),
+            # Service accounts
             ("guest", "guest"),
+            ("user", "user"),
+            ("test", "test"),
+            ("demo", "demo"),
+            # IoT/Router defaults
+            ("admin", ""),  # Empty password
+            ("admin", "1234"),
+            ("admin", "admin1"),
+            ("support", "support"),
+            # Application defaults
+            ("tomcat", "tomcat"),
+            ("weblogic", "weblogic"),
+            ("jenkins", "jenkins"),
         ]
 
-        for form in login_forms[:1]:  # Only test one form to avoid excessive requests
+        for form in login_forms[:1]:  # Limit to first form to avoid excessive requests
             username_fields = [name for name in form.inputs.keys()
-                             if any(x in name.lower() for x in ['user', 'email', 'login', 'name'])]
+                             if any(x in name.lower() for x in ['user', 'email', 'login', 'name', 'username'])]
             password_fields = [k for k, v in form.input_types.items() if v == 'password']
 
             if username_fields and password_fields:
-                # Just report that default credentials should be tested
-                # Actually testing would generate too many requests
+                username_field = username_fields[0]
+                password_field = password_fields[0]
+
+                # Test common credentials (limit to top 10 to avoid excessive requests)
+                for username, password in default_creds[:10]:
+                    data = dict(form.inputs)
+                    data[username_field] = username
+                    data[password_field] = password
+
+                    res = self.scanner._request(form.method, form.action,
+                                               data=data if form.method == "POST" else None,
+                                               params=data if form.method == "GET" else None)
+
+                    if res:
+                        # Check for successful login indicators
+                        success_indicators = [
+                            "welcome", "dashboard", "logout", "profile",
+                            "success", "logged in", "session", "account",
+                            "home", "panel", "menu"
+                        ]
+
+                        # Check for failure indicators
+                        failure_indicators = [
+                            "invalid", "incorrect", "failed", "error",
+                            "wrong", "denied", "unauthorized"
+                        ]
+
+                        response_lower = res.text.lower()
+
+                        # Successful login detection
+                        has_success = any(ind in response_lower for ind in success_indicators)
+                        has_failure = any(ind in response_lower for ind in failure_indicators)
+
+                        # Also check for redirect (common success pattern)
+                        is_redirect = res.status_code in [301, 302, 303, 307, 308]
+
+                        if (has_success and not has_failure) or is_redirect:
+                            self.add_finding(Finding(
+                                id="AUTH-007",
+                                name="Default Credentials Accepted",
+                                category="Authentication",
+                                severity=HIGH,
+                                confidence="High",
+                                url=form.action,
+                                method=form.method,
+                                evidence=f"Login successful with credentials: {username}:{password}",
+                                impact="Default credentials allow unauthorized access. Attackers can compromise the entire application.",
+                                remediation="Immediately change default credentials. Enforce strong password policies. Disable default accounts.",
+                                cwe="CWE-798"
+                            ))
+                            return  # Stop after finding working credentials
+
+                # If we tested all without success, report that testing was done
                 self.add_finding(Finding(
-                    id="AUTH-007",
-                    name="Potential Default Credentials (Manual Check Required)",
+                    id="AUTH-008",
+                    name="Login Form Detected (Default Credentials Tested)",
                     category="Authentication",
                     severity=LOW,
                     confidence="Low",
                     url=form.action,
                     method=form.method,
-                    evidence="Login form detected - manual testing for default credentials recommended",
-                    impact="Default credentials provide easy unauthorized access to attackers.",
+                    evidence="Tested 10 common default credentials - none accepted",
+                    impact="Login form present. Manual testing with additional credential lists recommended.",
                     remediation="Ensure all default credentials are changed and enforce unique passwords.",
                     cwe="CWE-798"
                 ))
-                break  # Report once
+                break  # Only test one form
