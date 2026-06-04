@@ -1,10 +1,10 @@
 # Xploit
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-1.6.0-blue.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Version-1.7.0-blue.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow.svg?style=flat-square">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square">
-  <img src="https://img.shields.io/badge/Tests-Passing-brightgreen.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Detections-25%2B-brightgreen.svg?style=flat-square">
 </p>
 
 **Xploit** is a CLI-based web vulnerability scanner designed for authorized security assessments. It performs intelligent crawling, tests for OWASP Top 10 vulnerabilities, and generates professional security reports with CWE classifications.
@@ -15,13 +15,12 @@
 
 ## 🚀 Features
 
-- **Comprehensive Vulnerability Detection**
-  - SQL Injection (Error-based and Time-based)
-  - Cross-Site Scripting (XSS) with 11 payload variations
-  - Cross-Site Request Forgery (CSRF)
-  - Command Injection
-  - Directory Traversal
-  - And 10+ more OWASP vulnerability types
+- **Comprehensive Vulnerability Detection (25+ Types)**
+  - **Injection Attacks:** SQL, XSS, Command, LDAP, XML/XXE, NoSQL, SSTI
+  - **Authentication Issues:** Username enumeration, weak policies, session management
+  - **Sensitive Data Exposure:** Credit cards, SSNs, API keys, private keys, cloud credentials
+  - **Security Misconfigurations:** Missing headers, risky methods, directory listing
+  - **CSRF, IDOR, Open Redirect, Clickjacking, CORS**
 
 - **Intelligent Crawling**
   - Same-origin enforcement with configurable depth
@@ -152,7 +151,7 @@ python3 -m pytest tests/
 
 ## 🛡️ Vulnerability Coverage
 
-Xploit detects the following vulnerability types:
+Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 
 | Category | Vulnerabilities | Detection Method |
 |----------|----------------|------------------|
@@ -160,10 +159,25 @@ Xploit detects the following vulnerability types:
 | | Cross-Site Scripting (XSS) | 11 payload variations + reflection check |
 | | Command Injection | Time-delay and output-based detection |
 | | Directory Traversal | Path traversal payloads |
+| | **LDAP Injection** | Error-based detection with LDAP payloads |
+| | **XML Injection / XXE** | External entity payloads + file disclosure |
+| | **NoSQL Injection** | MongoDB/CouchDB error patterns |
+| | **Server-Side Template Injection (SSTI)** | Template expression evaluation |
 | **Broken Authentication** | Credentials over HTTP | Form analysis |
+| | **Username Enumeration** | Response timing/size differences |
+| | **Weak Password Policy** | Policy indicator analysis |
+| | **Session Token in URL** | Parameter analysis |
+| | **Insecure Session Cookies** | Cookie flag validation |
+| | **Default Credentials (Heuristic)** | Common credential patterns |
 | **Sensitive Data** | API keys in comments | Regex pattern matching |
 | | Config file exposure | Known file probing |
 | | Technology disclosure | Header analysis |
+| | **Credit Card Numbers** | Luhn-validated card patterns |
+| | **Social Security Numbers** | SSN pattern detection |
+| | **Private Keys** | RSA/EC/PGP key patterns |
+| | **Database Connection Strings** | Connection string patterns |
+| | **Cloud API Credentials** | AWS/Google/Stripe key patterns |
+| | **Email Addresses (PII)** | Bulk email exposure detection |
 | **Security Misconfiguration** | Missing CSP, HSTS, X-Frame-Options | Header validation |
 | | Risky HTTP methods | OPTIONS request testing |
 | | Directory listing | Response pattern matching |
