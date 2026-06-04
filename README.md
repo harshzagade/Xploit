@@ -155,8 +155,8 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 
 | Category | Vulnerabilities | Detection Method |
 |----------|----------------|------------------|
-| **Injection** | SQL Injection (Error-based, Time-based) | Payload injection + response analysis |
-| | Cross-Site Scripting (XSS) | 11 payload variations + reflection check |
+| **Injection** | SQL Injection (Error, Time, Union, Boolean, Stacked) | 5 SQLi techniques + response analysis |
+| | Cross-Site Scripting (XSS) | 20 payload variations + reflection check |
 | | Command Injection | Time-delay and output-based detection |
 | | Directory Traversal | Path traversal payloads |
 | | **LDAP Injection** | Error-based detection with LDAP payloads |
