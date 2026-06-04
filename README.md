@@ -1,138 +1,325 @@
 # Xploit
 
-`Xploit` is a CLI-based web vulnerability scanner for authorized security assessments. It performs bounded crawling, tests high-risk input surfaces, and prints clear findings directly in the terminal.
+<p align="center">
+  <img src="https://img.shields.io/badge/Version-1.6.0-blue.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-yellow.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Tests-Passing-brightgreen.svg?style=flat-square">
+</p>
 
-> Use Xploit only on applications you own or are explicitly authorized to test.
+**Xploit** is a CLI-based web vulnerability scanner designed for authorized security assessments. It performs intelligent crawling, tests for OWASP Top 10 vulnerabilities, and generates professional security reports with CWE classifications.
 
-## Features
+> ⚠️ **Legal Notice:** Use Xploit only on applications you own or are explicitly authorized to test. Unauthorized scanning is illegal.
 
-- Terminal-first workflow with no output files required.
-- Same-origin crawling with configurable depth and page limits.
-- Detailed findings with severity, confidence, CWE, evidence, impact, remediation, and validation guidance.
-- Clean handling for unreachable targets.
-- Universal `xploit` command via Python package entry point.
+---
 
-## Vulnerability Coverage
+## 🚀 Features
 
-Xploit checks for:
+- **Comprehensive Vulnerability Detection**
+  - SQL Injection (Error-based and Time-based)
+  - Cross-Site Scripting (XSS) with 11 payload variations
+  - Cross-Site Request Forgery (CSRF)
+  - Command Injection
+  - Directory Traversal
+  - And 10+ more OWASP vulnerability types
 
-- SQL Injection
-- Cross-Site Scripting (XSS)
-- Cross-Site Request Forgery (CSRF)
-- Command Injection
-- Directory Traversal
-- Insecure HTTP Headers
-- Broken Authentication
-- Sensitive Data Exposure
-- Open Redirect
-- Security Misconfiguration
+- **Intelligent Crawling**
+  - Same-origin enforcement with configurable depth
+  - Sitemap and robots.txt discovery
+  - Form extraction and parameter analysis
+  - Up to 500 pages per scan
 
-## Installation
+- **Professional Reporting**
+  - Detailed findings with severity ratings (HIGH/MEDIUM/LOW)
+  - CWE classifications for all vulnerabilities
+  - Evidence, impact assessment, and remediation guidance
+  - Text and JSON output formats
 
-### Local development
+- **Advanced Scanning Controls**
+  - Three scan modes: `passive`, `active`, `full`
+  - Custom headers and cookies for authenticated scanning
+  - Rate limiting to avoid detection
+  - Path scoping for targeted assessments
 
+- **CI/CD Integration**
+  - GitHub Actions workflow for automated testing
+  - JSON output for pipeline integration
+  - Quiet mode for scripting
+
+---
+
+## 📦 Installation
+
+### Using pipx (Recommended)
 ```bash
 git clone https://github.com/harshzagade/Xploit.git
 cd Xploit
+pipx install .
+```
+
+### Using pip
+```bash
+pip install --user .
+```
+
+### Development Install
+```bash
 python3 -m pip install -e .
 ```
 
-### User install
+---
 
-```bash
-python3 -m pip install .
-```
+## 🎯 Quick Start
 
-## Usage
-
-Scan a target:
-
+### Basic Scan
 ```bash
 xploit https://target.example
 ```
 
-Tune crawl depth, page count, and timeout:
-
+### Full Scan with Custom Settings
 ```bash
-xploit https://target.example --depth 2 --max-pages 40 --timeout 8
+xploit https://target.example \
+  --mode full \
+  --depth 4 \
+  --max-pages 500 \
+  --timeout 8
 ```
 
-Run without installing:
+### Authenticated Scan
+```bash
+xploit https://target.example/dashboard \
+  --header "Authorization: Bearer YOUR_TOKEN" \
+  --cookie "session=YOUR_SESSION"
+```
 
+### JSON Output for Automation
+```bash
+xploit https://target.example \
+  --format json \
+  --quiet > results.json
+```
+
+### Passive Scan (Non-Intrusive)
+```bash
+xploit https://target.example \
+  --mode passive \
+  --scope-prefix /app
+```
+
+---
+
+## 📖 Usage Examples
+
+### Scan with Rate Limiting
+```bash
+xploit https://target.example --rate-limit 0.5
+```
+
+### Scope Scan to Specific Path
+```bash
+xploit https://target.example/api --scope-prefix /api
+```
+
+### Run Without Installing
 ```bash
 python3 xploit.py https://target.example
 python3 -m xploit https://target.example
 ```
 
-Interactive prompt:
+---
 
+## 🧪 Testing
+
+### Test on Vulnerable Application
 ```bash
-xploit
+# Start the deliberately vulnerable test app
+python3 vulnerable_test_app.py
+
+# Run Xploit against it
+xploit http://127.0.0.1:5000/ --mode full
 ```
 
-## CLI Options
+**Expected Results:** 18 findings including SQL Injection and XSS
 
-```text
+See [HOW_TO_TEST.md](./HOW_TO_TEST.md) for detailed testing instructions.
+
+### Run Unit Tests
+```bash
+python3 -m pytest tests/
+```
+
+---
+
+## 🛡️ Vulnerability Coverage
+
+Xploit detects the following vulnerability types:
+
+| Category | Vulnerabilities | Detection Method |
+|----------|----------------|------------------|
+| **Injection** | SQL Injection (Error-based, Time-based) | Payload injection + response analysis |
+| | Cross-Site Scripting (XSS) | 11 payload variations + reflection check |
+| | Command Injection | Time-delay and output-based detection |
+| | Directory Traversal | Path traversal payloads |
+| **Broken Authentication** | Credentials over HTTP | Form analysis |
+| **Sensitive Data** | API keys in comments | Regex pattern matching |
+| | Config file exposure | Known file probing |
+| | Technology disclosure | Header analysis |
+| **Security Misconfiguration** | Missing CSP, HSTS, X-Frame-Options | Header validation |
+| | Risky HTTP methods | OPTIONS request testing |
+| | Directory listing | Response pattern matching |
+| **CSRF** | Missing anti-CSRF tokens | POST form analysis |
+| **Access Control** | IDOR indicators | Predictable ID detection |
+| | Open Redirect | Redirect parameter testing |
+| **Other** | CORS misconfiguration | CORS header analysis |
+| | Clickjacking | Frame options check |
+| | File upload surfaces | Input type detection |
+
+---
+
+## 📊 Sample Output
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+                        XPLOIT ASSESSMENT REPORT                            
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[1] ASSESSMENT OVERVIEW
+    Target URL        : https://target.example
+    Scan Status       : COMPLETED
+    Scan Mode         : FULL
+    Duration          : 12.5s
+    Pages Crawled     : 15
+    Forms Discovered  : 8
+    Total Findings    : 23
+
+[2] FINDINGS SUMMARY
+    CRITICAL/HIGH     : 8
+    MEDIUM            : 10
+    LOW               : 5
+
+[3] DETAILED VULNERABILITY ANALYSIS
+
+    ID: SQLi-001 | SQL Injection
+    ────────────────────────────────────────────────────────────────────
+    Severity    : HIGH
+    Category    : SQL Injection
+    CWE         : CWE-89
+    Target      : GET https://target.example/user?id=1
+    Parameter   : id
+    Evidence    : MySQL error: You have an error in your SQL syntax
+    Impact      : Attacker can read, modify, or delete database records
+    Remediation : Use parameterized queries or prepared statements
+```
+
+---
+
+## 🔧 CLI Options
+
+```bash
 usage: xploit <url> [options]
 
+positional arguments:
+  url                   target URL (e.g., https://example.com)
+
 options:
-  --depth DEPTH         crawl depth inside the same origin
-  --max-pages N         maximum pages to crawl
-  --timeout SECONDS     HTTP timeout per request
+  -h, --help            show this help message and exit
+  -v, --version         show program's version number and exit
+  --depth DEPTH         crawl depth (default: 4)
+  --max-pages MAX_PAGES maximum pages to crawl (default: 500)
+  --timeout TIMEOUT     HTTP timeout per request in seconds (default: 6)
+  --mode {passive,active,full}
+                        scan mode
+  --rate-limit RATE_LIMIT
+                        minimum delay between requests in seconds
+  --scope-prefix SCOPE_PREFIX
+                        restrict crawling to a path prefix
+  --format {text,json}  output format
+  --header NAME: VALUE  add a custom HTTP header (repeatable)
+  --cookie NAME=VALUE   add a cookie (repeatable)
+  --insecure            disable SSL certificate verification
   --no-color            disable ANSI colors
-  --quiet               print compact terminal output
-  -v, --version         show version
-  -h, --help            show help
+  --quiet               suppress banner and progress output
 ```
 
-## Output Preview
+---
 
-```text
-Scan Overview
-------------------------------------------------------------------------
-Target URL        : https://target.example/
-Scan status       : COMPLETED
-Duration          : 5.84s
-Pages crawled     : 2
-Forms discovered  : 1
-Total findings    : 8
-High severity     : 4
-Medium severity   : 4
-Low severity      : 0
+## 🏗️ Architecture
 
-Detailed Findings
-------------------------------------------------------------------------
-[01] HIGH Missing Content-Security-Policy
-     Finding ID     : HDR-001
-     Category       : Insecure HTTP Headers
-     Confidence     : High
-     Affected URL   : https://target.example/
-     CWE            : CWE-693
-     Evidence       : Response does not include `content-security-policy`.
-     Remediation    : Set a strict `content-security-policy` header.
+```
+xploit/
+├── cli.py              # Command-line interface
+├── scanner.py          # Core scanning engine
+├── reporting.py        # Report generation
+└── modules/            # Vulnerability detection modules
+    ├── sqli.py        # SQL Injection
+    ├── xss.py         # Cross-Site Scripting
+    ├── injection_advanced.py  # Command Injection, Traversal
+    ├── logic_vulnerabilities.py  # CSRF, Open Redirect
+    ├── exposure.py    # Information Disclosure, IDOR
+    └── general.py     # Headers, Auth, CORS
 ```
 
-## Development
+---
 
-Create a virtual environment:
+## 🧬 Scan Modes
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python3 -m pip install -e .
-```
+### Passive Mode
+- Analyzes observed responses only
+- No payload injection
+- Checks headers, comments, tech disclosure
+- Safe for production environments
 
-Validate:
+### Active Mode
+- Injects payloads into parameters
+- Tests for SQLi, XSS, Command Injection
+- Probes for sensitive files
+- More intrusive
 
-```bash
-python3 -m compileall xploit xploit.py
-xploit --help
-```
+### Full Mode (Default)
+- Combines passive + active checks
+- Comprehensive vulnerability coverage
+- Recommended for security assessments
 
-## Safety Notes
+---
 
-Xploit uses visible, non-stealth probes and does not attempt persistence, evasion, credential theft, exploit chaining, or destructive actions. Findings should be manually validated before being reported as confirmed vulnerabilities.
+## 🤝 Contributing
 
-## License
+Contributions are welcome! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
-MIT License. See [LICENSE](LICENSE).
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 🔒 Security
+
+For security concerns or responsible disclosure, see [SECURITY.md](./SECURITY.md).
+
+---
+
+## 👨‍💻 Author
+
+**Harsh Zagade**
+- GitHub: [@harshzagade](https://github.com/harshzagade)
+- LinkedIn: [harsh-zagade](https://linkedin.com/in/harsh-zagade)
+
+---
+
+## 📚 Additional Resources
+
+- [Testing Guide](./HOW_TO_TEST.md) - How to test Xploit
+- [Testing Report](./TESTING_REPORT.md) - Verification results
+- [Changelog](./CHANGELOG.md) - Version history
+
+---
+
+## ⚖️ Disclaimer
+
+This tool is provided for educational and authorized security testing purposes only. Users are responsible for complying with applicable laws and obtaining proper authorization before scanning any systems. The author assumes no liability for misuse or damage caused by this tool.
+
+---
+
+**Built with ❤️ for the cybersecurity community**
