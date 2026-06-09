@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import secrets
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, parse_qsl, urlencode, urlunparse
 
 from .base import BaseModule
 from ..scanner import Finding, HIGH, MEDIUM, LOW, PASSIVE
@@ -37,7 +37,7 @@ class ExposureModule(BaseModule):
         "/.htaccess": (r"(?i)(RewriteEngine|AuthType)", "Apache Config Disclosure"),
         "/.ssh/id_rsa": (r"(?i)PRIVATE KEY", "SSH Private Key Disclosure"),
         "/.bash_history": (r"(?i)(cd|ls|curl|mysql)", "Shell History Disclosure"),
-        "/.DS_Store": (r".", "macOS Desktop Metadata Disclosure"),
+        "/.DS_Store": (r"(?s)\x00\x00\x00\x01\x42\x75\x64\x31|Bud1|\x00\x00\x00", "macOS Desktop Metadata Disclosure"),
         "/wp-config.php": (r"(?i)(DB_NAME|DB_PASSWORD|AUTH_KEY|SECURE_AUTH_KEY)", "WordPress Config Exposure"),
         "/config.php": (r"(?i)(\$config|database|db_password|secret)", "Application Config Exposure"),
         "/config/database.yml": (r"(?i)(adapter|database|password)", "Rails Database Config Exposure"),
@@ -46,21 +46,17 @@ class ExposureModule(BaseModule):
         "/composer.json": (r"(?i)(\"name\"|\"require\")", "PHP Project Disclosure"),
     }
     DEBUG_PATHS = {
-        "/phpinfo.php": r"(?i)(phpinfo\(\)|PHP Version)",
-        "/.well-known/": r".",
-        "/debug": r"(?i)(debug|traceback|stack trace|environment)",
-        "/trace": r"(?i)(traceback|stack trace|request headers)",
-        "/info": r"(?i)(environment|build|version|runtime)",
-        "/status": r"(?i)(uptime|status|ok)",
-        "/server-status": r"(?i)(apache server status|server uptime)",
+        "/phpinfo.php": r"(?i)(phpinfo\(\)|PHP Version \d)",
+        "/server-status": r"(?i)(Apache Server Status|Server uptime|requests currently being processed)",
+        "/debug": r"(?i)(Traceback \(most recent call|stack trace|Exception in thread)",
+        "/trace": r"(?i)(Traceback \(most recent call|stack trace|request headers)",
         "/actuator/env": r"(?i)(propertySources|activeProfiles|systemEnvironment)",
-        "/actuator/heapdump": r"(?i)(JAVA PROFILE|heap|HotSpot)",
-        "/actuator/health": r"(?i)(status|UP|DOWN)",
-        "/metrics": r"(?i)(jvm_|http_server_requests|prometheus)",
-        "/console": r"(?i)(terminal|bash|exec|login)",
-        "/jenkins/": r"(?i)Jenkins",
-        "/login.php": r"(?i)(login|username|password)",
-        "/admin/": r"(?i)(admin|dashboard|management)",
+        "/actuator/heapdump": r"(?i)(JAVA PROFILE|HotSpot)",
+        "/actuator/health": r"(?i)(\"status\"\s*:\s*\"(UP|DOWN)\")",
+        "/actuator/metrics": r"(?i)(jvm_|http_server_requests)",
+        "/metrics": r"(?i)(jvm_memory|http_server_requests|process_cpu)",
+        "/console": r"(?i)(Groovy Web Console|H2 Console|Hawtio|terminal emulator)",
+        "/jenkins/": r"(?i)(Jenkins|hudson\.model)",
     }
 
     def run(self) -> None:
@@ -75,7 +71,7 @@ class ExposureModule(BaseModule):
         for url, response in self.scanner.pages.items():
             if "text/html" not in response.headers.get("Content-Type", "").lower():
                 continue
-            if re.search(r"(?i)<title>\s*Index of /|Index of /|Directory Listing", response.text):
+            if re.search(r"(?i)<title>\s*(Index of /|Directory Listing)", response.text):
                 self.add_finding(Finding(
                     id="MISCFG-002",
                     name="Directory Listing Enabled",
@@ -90,61 +86,137 @@ class ExposureModule(BaseModule):
                 ))
 
     def _check_html_comment_disclosure(self) -> None:
+        seen_comment_sets: set[frozenset[str]] = set()
         for url, response in self.scanner.pages.items():
             if "text/html" not in response.headers.get("Content-Type", "").lower():
                 continue
+            matched_excerpts = []
             for comment in re.findall(r"<!--(.*?)-->", response.text, re.S):
-                evidence = " ".join(comment.strip().split())[:120]
                 if any(pattern.search(comment) for pattern in self.COMMENT_PATTERNS):
-                    self.add_finding(Finding(
-                        id="INFO-001",
-                        name="Sensitive Information in HTML Comment",
-                        category="Information Disclosure",
-                        severity=LOW,
-                        confidence="Medium",
-                        url=url,
-                        evidence=f"HTML comment contains sensitive-looking text: {evidence}",
-                        impact="Developer notes, internal addresses, or secret-like values in client-visible comments can help attackers map the application.",
-                        remediation="Remove sensitive comments from rendered HTML and keep operational notes outside client-visible templates.",
-                        cwe="CWE-200",
-                    ))
+                    matched_excerpts.append(" ".join(comment.strip().split())[:80])
+            if not matched_excerpts:
+                continue
+            # Skip if we already reported this exact set of comments from another URL
+            # (happens when the crawler stores the same response body under a redirect URL).
+            key = frozenset(matched_excerpts)
+            if key in seen_comment_sets:
+                continue
+            seen_comment_sets.add(key)
+            evidence = f"{len(matched_excerpts)} sensitive comment(s) found: {matched_excerpts[0]!r}"
+            self.add_finding(Finding(
+                id="INFO-001",
+                name="Sensitive Information in HTML Comment",
+                category="Information Disclosure",
+                severity=LOW,
+                confidence="Medium",
+                url=url,
+                evidence=evidence,
+                impact="Developer notes, internal addresses, or secret-like values in client-visible comments help attackers map the application.",
+                remediation="Remove sensitive comments from rendered HTML and keep operational notes outside client-visible templates.",
+                cwe="CWE-200",
+            ))
 
     def _check_idor_indicators(self) -> None:
-        for url in self.scanner.pages:
-            if any(pattern.search(url) for pattern in self.IDOR_URL_PATTERNS):
-                self.add_finding(Finding(
-                    id="IDOR-001",
-                    name="Predictable Object Identifier",
-                    category="Access Control Heuristic",
-                    severity=LOW,
-                    confidence="Medium",
-                    url=url,
-                    evidence="URL contains numeric object identifier parameters.",
-                    impact="Predictable identifiers are not vulnerabilities by themselves, but they require server-side authorization checks to prevent IDOR/BOLA issues.",
-                    remediation="Validate object-level authorization for every request and avoid relying on obscurity of sequential IDs.",
-                    cwe="CWE-639",
-                ))
+        # Active IDOR testing: for each URL/form param that looks like a numeric
+        # object ID, request the original, then probe adjacent IDs (+1, -1, +2, -2).
+        # A confirmed IDOR is when an adjacent ID returns a substantially different
+        # successful response — meaning the server returned a different object.
+        for url in list(self.scanner.pages):
+            self._test_idor_url(url)
         for form in self.scanner.forms:
-            for name, value in form.inputs.items():
-                if name.lower() in self.IDOR_FIELD_NAMES and str(value).isdigit():
-                    self.add_finding(Finding(
-                        id="IDOR-002",
-                        name="Predictable Object Identifier in Form",
-                        category="Access Control Heuristic",
-                        severity=LOW,
-                        confidence="Medium",
-                        url=form.action,
-                        parameter=name,
-                        method=form.method,
-                        evidence=f"Form field {name!r} contains numeric object identifier {value!r}.",
-                        impact="Client-supplied object identifiers require authorization checks to prevent horizontal privilege escalation.",
-                        remediation="Enforce object-level authorization server-side before reading or modifying referenced records.",
-                        cwe="CWE-639",
-                    ))
+            self._test_idor_form(form)
+
+    def _test_idor_url(self, url: str) -> None:
+        parsed = urlparse(url)
+        params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        id_param_names = self.IDOR_FIELD_NAMES | {"id", "user", "account", "order", "profile"}
+        for param, value in params.items():
+            if param.lower() not in {p.lower() for p in id_param_names}:
+                continue
+            if not str(value).isdigit():
+                continue
+            orig_id = int(value)
+            self._probe_idor(url, param, orig_id, method="GET", base_data=None)
+
+    def _test_idor_form(self, form) -> None:
+        for name, value in form.inputs.items():
+            if name.lower() not in self.IDOR_FIELD_NAMES:
+                continue
+            if not str(value).isdigit():
+                continue
+            orig_id = int(value)
+            self._probe_idor(form.action, name, orig_id, method=form.method, base_data=form.inputs)
+
+    def _probe_idor(self, url: str, param: str, orig_id: int, method: str, base_data) -> None:
+        # Fetch the baseline response for the original ID first.
+        orig_res = self._fetch(url, param, str(orig_id), method, base_data)
+        if not orig_res or orig_res.status_code not in (200, 201):
+            return
+        orig_text = orig_res.text
+        orig_len = len(orig_text)
+        # Skip responses too short to contain meaningful object data.
+        if orig_len < 100:
+            return
+
+        for delta in (1, -1, 2, -2):
+            probe_id = orig_id + delta
+            if probe_id <= 0:
+                continue
+            res = self._fetch(url, param, str(probe_id), method, base_data)
+            if not res or res.status_code not in (200, 201):
+                continue
+            probe_text = res.text
+            probe_len = len(probe_text)
+
+            # Skip if the response is identical to original — same object,
+            # same content, no IDOR. Require both size and text to match.
+            if probe_text == orig_text:
+                continue
+
+            # Skip responses that look like error/not-found pages.
+            error_phrases = ["not found", "no record", "invalid", "error", "unauthorized",
+                             "forbidden", "access denied", "does not exist", "404"]
+            if any(p in probe_text.lower() for p in error_phrases):
+                continue
+
+            # The probe returned a different successful response — the server
+            # handed over a different object without any visible auth check.
+            # Show a snippet of what the probe returned as evidence.
+            snippet = probe_text.strip()[:120].replace("\n", " ")
+            self.add_finding(Finding(
+                id="IDOR-001",
+                name="Insecure Direct Object Reference (IDOR)",
+                category="Broken Access Control",
+                severity=MEDIUM,
+                confidence="Medium",
+                url=url,
+                parameter=param,
+                method=method,
+                evidence=(
+                    f"{method} {param}={orig_id} → {orig_len}B; "
+                    f"{param}={probe_id} (Δ{delta:+d}) → {probe_len}B, different content: \"{snippet}\""
+                ),
+                trigger=f"{param}={probe_id}",
+                impact="An attacker can enumerate object IDs to access other users' records, files, or account data without authorization.",
+                remediation="Enforce object-level authorization on every request. Verify the authenticated user owns or has permission to access the requested object before returning it.",
+                cwe="CWE-639",
+            ))
+            return  # One confirmed probe per param is enough
+
+    def _fetch(self, url: str, param: str, value: str, method: str, base_data) -> object:
+        if method == "GET":
+            parsed = urlparse(url)
+            pairs = [(k, value if k == param else v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)]
+            new_url = urlunparse(parsed._replace(query=urlencode(pairs)))
+            return self.scanner._request("GET", new_url)
+        else:
+            data = dict(base_data) if base_data else {}
+            data[param] = value
+            return self.scanner._request("POST", url, data=data)
 
     def _check_sensitive_files(self) -> None:
         # Get a baseline for a known non-existent file to detect "soft 404" behavior
-        baseline_path = f"/xploit-random-{secrets.token_hex(4)}.html"
+        baseline_path = f"/xploit-random-{secrets.token_hex(16)}.html"
         baseline_target = self._root_url(baseline_path)
         baseline_res = self.scanner._request("GET", baseline_target, allow_redirects=False)
         baseline_len = len(baseline_res.text) if baseline_res and baseline_res.status_code == 200 else -1
@@ -156,9 +228,11 @@ class ExposureModule(BaseModule):
             response = self.scanner._request("GET", target, allow_redirects=False)
             if not response or response.status_code != 200:
                 continue
-            
-            # If the response size is identical to our "soft 404" baseline, ignore it
-            if baseline_len > 0 and abs(len(response.text) - baseline_len) < 100:
+
+            # Soft-404 guard: some apps return 200 for every path with a generic page.
+            # Use a wider tolerance (500 bytes) to account for encoding differences and
+            # minor template variations while still catching genuine content.
+            if baseline_len > 0 and abs(len(response.text) - baseline_len) < 500:
                 continue
 
             if re.search(pattern, response.text[:20000]):
@@ -177,7 +251,7 @@ class ExposureModule(BaseModule):
 
     def _check_debug_endpoints(self) -> None:
         # Similar logic for debug endpoints
-        baseline_path = f"/xploit-random-{secrets.token_hex(4)}.html"
+        baseline_path = f"/xploit-random-{secrets.token_hex(16)}.html"
         baseline_target = self._root_url(baseline_path)
         baseline_res = self.scanner._request("GET", baseline_target, allow_redirects=False)
         baseline_len = len(baseline_res.text) if baseline_res and baseline_res.status_code == 200 else -1
@@ -190,7 +264,7 @@ class ExposureModule(BaseModule):
             if not response or response.status_code != 200:
                 continue
 
-            if baseline_len > 0 and abs(len(response.text) - baseline_len) < 100:
+            if baseline_len > 0 and abs(len(response.text) - baseline_len) < 500:
                 continue
 
             if re.search(pattern, response.text[:20000]):

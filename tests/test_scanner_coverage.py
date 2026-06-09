@@ -113,7 +113,18 @@ class VulnerableHandler(BaseHTTPRequestHandler):
             return
 
         if parsed.path == "/account":
-            self._html("account details")
+            account_id = params.get("id", ["0"])[0]
+            # Return different content per ID to simulate IDOR — each ID returns
+            # a distinct page so the scanner can detect the access control gap.
+            self._html(
+                f"<html><body><h1>Account Profile</h1>"
+                f"<p>Name: User {account_id}</p>"
+                f"<p>Email: user{account_id}@example.com</p>"
+                f"<p>Phone: 555-{account_id.zfill(4)}</p>"
+                f"<p>Address: {account_id} Main Street, Springfield</p>"
+                f"<p>Balance: ${(int(account_id) if account_id.isdigit() else 0) * 37}.00</p>"
+                f"</body></html>"
+            )
             return
 
         if parsed.path == "/files/":
@@ -212,7 +223,7 @@ class ScannerCoverageTest(unittest.TestCase):
             "Security Misconfiguration",
             "Sensitive Data Exposure",
             "Information Disclosure",
-            "Access Control Heuristic",
+            "Broken Access Control",
         }
         self.assertEqual("completed", result.status)
         self.assertTrue(expected.issubset(categories), f"Missing categories: {expected - categories}")

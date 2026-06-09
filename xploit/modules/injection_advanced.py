@@ -1,5 +1,4 @@
 from __future__ import annotations
-import time
 from .base import BaseModule
 from ..scanner import Finding, HIGH, mutate_query
 
@@ -25,32 +24,21 @@ class AdvancedInjectionModule(BaseModule):
             self._test_traversal(form.action, param, form.method, form.inputs)
 
     def _test_cmdi(self, url, param, method, base_data=None):
-        # Time-based CMDI
-        payloads = [
-            "; sleep 5", "| sleep 5", "& sleep 5", "`sleep 5`", "$(sleep 5)",
-            "; ping -c 6 127.0.0.1", "| ping -c 6 127.0.0.1",
-            "& ping -n 6 127.0.0.1", # Windows
-            "; timeout /t 5", # Windows
-        ]
-        for payload in payloads:
-            start = time.monotonic()
-            res = self._send(url, param, method, payload, base_data)
-            duration = time.monotonic() - start
-            if duration >= 5:
-                self._report(url, param, method, payload, "Command Injection", "CMDI-001", "Blind Time-based Command Injection detected.", "CWE-78", "Command Injection")
-                return
-        
-        # Output-based CMDI
-        # Using a math expression to distinguish execution from reflection
+        # Output-based CMDI — math expression extremely unlikely to appear in static content
+        baseline = self._send(url, param, method, "cmdi_baseline_xploit", base_data)
+        baseline_text = baseline.text if baseline else ""
+
         payloads = [
             "; echo $((1330+7))", "| echo $((1330+7))", "& echo $((1330+7))",
             "`echo $((1330+7))`", "$(echo $((1330+7)))",
-            "; set /a 1330+7", # Windows
+            "; set /a 1330+7",
         ]
         for payload in payloads:
             res = self._send(url, param, method, payload, base_data)
-            if res and ("1337" in res.text or "1337" in res.text) and payload not in res.text:
-                self._report(url, param, method, payload, "Command Injection", "CMDI-002", "Output-based Command Injection detected via mathematical expression evaluation.", "CWE-78", "Command Injection")
+            if res and "1337" in res.text and "1337" not in baseline_text and payload not in res.text:
+                self._report(url, param, method, payload, "Command Injection", "CMDI-001",
+                             "Output-based command injection confirmed: arithmetic expression evaluated by shell.",
+                             "CWE-78", "Command Injection")
                 return
 
     def _test_traversal(self, url, param, method, base_data=None):
@@ -66,7 +54,9 @@ class AdvancedInjectionModule(BaseModule):
         for payload in payloads:
             res = self._send(url, param, method, payload, base_data)
             if res and any(p in res.text for p in ["root:x:0:0:", "[extensions]", "bin/bash", "[fonts]"]):
-                self._report(url, param, method, payload, "Directory Traversal", "TRAV-001", f"Directory Traversal detected using {payload}", "CWE-22", "Directory Traversal")
+                self._report(url, param, method, payload, "Directory Traversal", "TRAV-001",
+                             f"Path traversal confirmed: OS file content detected in response.",
+                             "CWE-22", "Directory Traversal")
                 return
 
     def _send(self, url, param, method, payload, base_data=None):
@@ -78,9 +68,19 @@ class AdvancedInjectionModule(BaseModule):
             return self.scanner._request("POST", url, data=data)
 
     def _report(self, url, param, method, payload, name, id, evidence, cwe, category):
+        impacts = {
+            "Command Injection": "Command injection allows the attacker to execute arbitrary OS commands on the server, leading to full system compromise, data exfiltration, or lateral movement.",
+            "Directory Traversal": "Path traversal allows the attacker to read arbitrary files on the server, including credentials, source code, private keys, and OS configuration files.",
+        }
+        remediations = {
+            "Command Injection": "Never pass user-controlled input to shell commands. Use safe APIs (subprocess with a list, not shell=True). Whitelist allowed values.",
+            "Directory Traversal": "Canonicalize file paths and verify they remain within the allowed base directory. Reject any path containing '..' sequences.",
+        }
         self.add_finding(Finding(
             id=id, name=name, category=category, severity=HIGH, confidence="High",
             url=url, parameter=param, method=method, evidence=evidence,
-            trigger=f"payload={payload}", impact="Full server compromise possible.",
-            remediation="Sanitize inputs and use safe APIs.", cwe=cwe
+            trigger=f"payload={payload}",
+            impact=impacts.get(category, "High-severity injection vulnerability confirmed."),
+            remediation=remediations.get(category, "Sanitize and validate all user input."),
+            cwe=cwe
         ))

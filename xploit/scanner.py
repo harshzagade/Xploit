@@ -185,11 +185,13 @@ class WebScanner:
         
         self.session = requests.Session()
         # Expert Move: Implement robust retries at the adapter level
+        # Only retry on transient network errors (connection-level), not HTTP 5xx.
+        # Retrying 5xx on injection payloads inflates timing and masks real errors.
         retry_strategy = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"]
+            total=2,
+            backoff_factor=0.5,
+            status_forcelist=[429, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "OPTIONS"]
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         self.session.mount("http://", adapter)
@@ -219,34 +221,40 @@ class WebScanner:
         # Load and run modules
         from .modules.sqli import SQLInjectionModule
         from .modules.xss import XSSModule
-        from .modules.injection_advanced import AdvancedInjectionModule
+        from .modules.injection_advanced import AdvancedInjectionModule as CmdTraversalModule
         from .modules.general import GeneralModule
         from .modules.logic_vulnerabilities import LogicVulnerabilityModule
         from .modules.exposure import ExposureModule
-        from .modules.advanced_injection import AdvancedInjectionModule as NewAdvancedInjection
+        from .modules.advanced_injection import AdvancedInjectionModule as MultiInjectionModule
         from .modules.sensitive_data import SensitiveDataModule
         from .modules.auth_advanced import AdvancedAuthModule
         from .modules.brute_force import BruteForceModule
 
         modules_to_run = []
-        if self.mode in {PASSIVE, FULL}:
-            modules_to_run.extend([
-                GeneralModule(self),
-                ExposureModule(self),
-                SensitiveDataModule(self),
-            ])
+        # Passive checks always run — headers, exposure, and data disclosure
+        # are relevant regardless of whether injection testing is enabled.
+        modules_to_run.extend([
+            GeneralModule(self),
+            ExposureModule(self),
+            SensitiveDataModule(self),
+        ])
         if self.mode in {ACTIVE, FULL}:
             modules_to_run.extend([
                 SQLInjectionModule(self),
                 XSSModule(self),
-                AdvancedInjectionModule(self),
-                NewAdvancedInjection(self),
+                CmdTraversalModule(self),
                 LogicVulnerabilityModule(self),
                 AdvancedAuthModule(self),
+            ])
+        if self.mode == FULL:
+            # Heavy modules — SSTI/LDAP/NoSQL/XML injection and brute force
+            # are thorough but slow; only run in full mode.
+            modules_to_run.extend([
+                MultiInjectionModule(self),
                 BruteForceModule(self),
             ])
-            if self.mode == ACTIVE:
-                modules_to_run.append(ExposureModule(self))
+            # ExposureModule already runs in PASSIVE/FULL above.
+            # Do NOT add it again for ACTIVE — was causing double findings.
 
         for i, module in enumerate(modules_to_run, start=1):
             if self.on_progress:
@@ -273,7 +281,7 @@ class WebScanner:
             errors=self.errors,
         )
 
-    def _request(self, method: str, url: str, **kwargs) -> requests.Response | None:
+    def _request(self, method: str, url: str, *, quiet: bool = False, **kwargs) -> requests.Response | None:
         self._respect_rate_limit()
         try:
             res = self.session.request(
@@ -282,21 +290,23 @@ class WebScanner:
                 verify=self.verify,
                 **kwargs
             )
-            if not res.ok:
+            if not res.ok and not quiet:
                 self.errors.append(f"{method} {url}: {res.status_code} {res.reason}")
             return res
         except Exception as exc:
-            self.errors.append(f"{method} {url}: {exc}")
+            if not quiet:
+                self.errors.append(f"{method} {url}: {exc}")
             return None
 
     def _crawl(self) -> None:
         """Parallelized crawler with path normalization."""
-        queue = [(self.root, 0)]
-        seen = {self.root}
-        self._normalized_seen.add(normalize_path(self.root))
-        
+        entry_points = self._discover_entry_points()
+        seen = set(entry_points)
+        for ep in entry_points:
+            self._normalized_seen.add(normalize_path(ep))
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as executor:
-            futures = {executor.submit(self._request, "GET", self.root): (self.root, 0)}
+            futures = {executor.submit(self._request, "GET", ep): (ep, 0) for ep in entry_points}
             
             while futures and len(self.pages) < self.max_pages:
                 done, _ = concurrent.futures.wait(futures, return_when=concurrent.futures.FIRST_COMPLETED)
@@ -339,14 +349,21 @@ class WebScanner:
 
     def _discover_entry_points(self) -> list[str]:
         entry_points = {self.root}
-        robots = self._request("GET", urljoin(self.root, "/robots.txt"))
+        robots = self._request("GET", urljoin(self.root, "/robots.txt"), quiet=True)
         if robots and robots.status_code < 400:
-            entry_points.update(self._urls_from_text(robots.text))
+            for candidate in self._urls_from_text(robots.text):
+                # Relative paths (no scheme) — resolve against root before adding
+                if not candidate.startswith(("http://", "https://")):
+                    candidate = urljoin(self.root, candidate)
+                entry_points.add(candidate)
         sitemap_urls = [urljoin(self.root, "/sitemap.xml"), urljoin(self.root, "/sitemap_index.xml")]
         for sitemap_url in sitemap_urls:
-            response = self._request("GET", sitemap_url)
+            response = self._request("GET", sitemap_url, quiet=True)
             if response and response.status_code < 400:
-                entry_points.update(self._urls_from_text(response.text))
+                for candidate in self._urls_from_text(response.text):
+                    if not candidate.startswith(("http://", "https://")):
+                        candidate = urljoin(self.root, candidate)
+                    entry_points.add(candidate)
         return [url for url in entry_points if self._in_scope(url)]
 
     @staticmethod

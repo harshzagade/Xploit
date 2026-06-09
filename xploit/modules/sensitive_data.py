@@ -41,8 +41,36 @@ class SensitiveDataModule(BaseModule):
         re.compile(r'xox[baprs]-[0-9a-zA-Z]{10,48}'),  # Slack Token
     ]
 
+    # Generic hardcoded secret patterns in HTML/JS source
+    HARDCODED_SECRET_PATTERNS = [
+        # key=value / key: value assignment forms (JS, PHP, Python, JSON, config)
+        re.compile(r'(?i)(?:api[_\-]?key|apikey|access[_\-]?key|auth[_\-]?key|secret[_\-]?key|client[_\-]?secret|app[_\-]?secret)\s*[=:]\s*["\']([A-Za-z0-9+/=\-_\.]{8,})["\']'),
+        # password/passwd assignments
+        re.compile(r'(?i)(?:password|passwd|db[_\-]?pass|db[_\-]?password)\s*[=:]\s*["\']([^"\']{6,})["\']'),
+        # token assignments
+        re.compile(r'(?i)(?:access[_\-]?token|auth[_\-]?token|bearer[_\-]?token|id[_\-]?token|refresh[_\-]?token)\s*[=:]\s*["\']([A-Za-z0-9+/=\-_\.]{16,})["\']'),
+        # localStorage.setItem('apiKeyStr', 'value') — catches JS key storage
+        re.compile(r'(?i)(?:setItem|localStorage)\s*\(\s*["\']([^"\']*(?:key|token|secret|api|hash|auth)[^"\']*)["\'][^,]*,\s*["\']([A-Za-z0-9+/=\-_\.]{8,})["\']'),
+        # var/const/let apiKey = "value"
+        re.compile(r'(?i)(?:var|const|let)\s+(?:[a-z_][a-z0-9_]*)?(?:api[_\-]?key|apikey|secret|token|auth|access[_\-]?key)[a-z0-9_]*\s*=\s*["\']([A-Za-z0-9+/=\-_\.]{8,})["\']'),
+    ]
+
+    # JWT tokens (3 base64 segments separated by dots)
+    JWT_PATTERN = re.compile(r'\beyJ[A-Za-z0-9+/=_\-]{10,}\.[A-Za-z0-9+/=_\-]{10,}\.[A-Za-z0-9+/=_\-]{10,}\b')
+
+    # Internal IP addresses (not loopback)
+    INTERNAL_IP_PATTERN = re.compile(r'\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b')
+
     # Email addresses (potential PII)
     EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
+
+    # Values to skip — common placeholders that would produce FPs
+    _PLACEHOLDER_VALUES = {
+        "your_api_key", "your_key", "your_secret", "your_token", "your_password",
+        "api_key_here", "secret_here", "changeme", "change_me", "placeholder",
+        "example", "test", "demo", "sample", "dummy", "xxx", "yyy", "zzz",
+        "xxxxxxxx", "password", "secret", "token", "null", "none", "undefined",
+    }
 
     def run(self):
         for url, response in self.scanner.pages.items():
@@ -150,9 +178,69 @@ class SensitiveDataModule(BaseModule):
                 ))
                 break
 
-        # Check for excessive email addresses (PII)
+        # Check for hardcoded secrets in page/JS source
+        for pattern in self.HARDCODED_SECRET_PATTERNS:
+            for match in pattern.finditer(text):
+                # For multi-group patterns (setItem), value is the last group
+                value = match.group(match.lastindex) if match.lastindex else match.group(0)
+                if value.lower() in self._PLACEHOLDER_VALUES:
+                    continue
+                masked = value[:4] + "*" * min(8, len(value) - 4)
+                snippet = match.group(0)[:80].replace(value, masked)
+                self.add_finding(Finding(
+                    id="SENSDATA-007",
+                    name="Hardcoded Secret in Page Source",
+                    category="Sensitive Data Exposure",
+                    severity=HIGH,
+                    confidence="Medium",
+                    url=url,
+                    evidence=f"Secret pattern found in source: {snippet}",
+                    impact="Hardcoded secrets embedded in page source are visible to any user who views source. Attackers can extract and abuse them without further exploitation.",
+                    remediation="Move secrets server-side. Never embed API keys, passwords, or tokens in client-visible HTML or JavaScript.",
+                    cwe="CWE-798"
+                ))
+                break  # One finding per pattern per page
+
+        # Check for JWT tokens in page source
+        jwt_matches = self.JWT_PATTERN.findall(text)
+        if jwt_matches:
+            token = jwt_matches[0]
+            self.add_finding(Finding(
+                id="SENSDATA-008",
+                name="JWT Token Exposed in Page Source",
+                category="Sensitive Data Exposure",
+                severity=HIGH,
+                confidence="Medium",
+                url=url,
+                evidence=f"JWT token found in response: {token[:20]}...",
+                impact="A JWT in page source may be a valid session or API token. If not expired or bound to an IP, an attacker can reuse it to impersonate the user.",
+                remediation="Never embed tokens in page source. Deliver session tokens only via Set-Cookie with HttpOnly.",
+                cwe="CWE-522"
+            ))
+
+        # Check for internal IP addresses leaking in page source
+        ip_matches = self.INTERNAL_IP_PATTERN.findall(text)
+        if ip_matches:
+            unique_ips = list(dict.fromkeys(ip_matches))[:3]
+            self.add_finding(Finding(
+                id="SENSDATA-009",
+                name="Internal IP Address Disclosure",
+                category="Information Disclosure",
+                severity=LOW,
+                confidence="Medium",
+                url=url,
+                evidence=f"Internal IP(s) found in response: {', '.join(unique_ips)}",
+                impact="Internal IP ranges help attackers map the private network and identify targets for lateral movement.",
+                remediation="Remove internal hostnames and IP addresses from client-visible responses.",
+                cwe="CWE-200"
+            ))
+
+        # Check for excessive email addresses (PII).
+        # Threshold of 50 avoids flagging normal team/contact/docs pages that
+        # legitimately list a handful of addresses. 50+ in a single response
+        # suggests an unintended data dump or missing access control.
         email_matches = self.EMAIL_PATTERN.findall(text)
-        if len(email_matches) > 10:  # More than 10 emails suggests data dump
+        if len(email_matches) > 50:
             self.add_finding(Finding(
                 id="SENSDATA-006",
                 name="Excessive Email Address Exposure (PII)",
@@ -160,9 +248,9 @@ class SensitiveDataModule(BaseModule):
                 severity=MEDIUM,
                 confidence="Medium",
                 url=url,
-                evidence=f"Found {len(email_matches)} email addresses in response",
-                impact="Bulk email exposure may violate privacy regulations (GDPR, CCPA) and enable spam/phishing.",
-                remediation="Implement pagination and access controls for user data endpoints.",
+                evidence=f"Found {len(email_matches)} email addresses in a single response",
+                impact="Bulk email exposure may violate privacy regulations (GDPR, CCPA) and enable targeted phishing.",
+                remediation="Implement pagination and access controls for endpoints returning user data.",
                 cwe="CWE-359"
             ))
 

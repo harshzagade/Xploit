@@ -10,13 +10,14 @@ from .scanner import ACTIVE, FULL, PASSIVE, HIGH, Finding, ScanResult, WebScanne
 
 
 RESET = "\033[0m"
-BOLD = "\033[1m"
+BOLD  = "\033[1m"
+DIM   = "\033[2m"
 COLORS = {
-    HIGH: "\033[91m",
+    HIGH:     "\033[91m",
     "MEDIUM": "\033[93m",
-    "LOW": "\033[96m",
-    "INFO": "\033[90m",
-    "OK": "\033[92m",
+    "LOW":    "\033[96m",
+    "INFO":   "\033[2m",
+    "OK":     "\033[92m",
 }
 
 def color(text: str, name: str, enabled: bool = True) -> str:
@@ -90,37 +91,45 @@ def run_scan(args: argparse.Namespace) -> int:
         return 2
 
     def progress_callback(current: int, total: int, phase: str):
-        spinner = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        idx = current % len(spinner)
-        s = color(spinner[idx], "OK", colors)
-        
+        _SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+        spin    = color(_SPIN[current % len(_SPIN)], "OK", colors)
         percent = max(0, min(100, int((current / total) * 100))) if total > 0 else 0
-        width = 30
-        filled = int((percent / 100) * width)
-        bar = color("━" * filled, "OK", colors) + color("━" * (width - filled), "INFO", colors)
-        
-        label = phase[:25]
-        bold = BOLD if colors else ""
-        reset = RESET if colors else ""
-        clear_line = "\033[K" if colors else ""
-        # Use \r to overwrite the same line
-        sys.stdout.write(f"\r {s} {bold}{label:<25}{reset} {bar} {bold}{percent:>3}%{reset}{clear_line}")
+        W       = 28
+        filled  = int((percent / 100) * W)
+        bar     = (
+            color("▓" * filled,       "OK",   colors) +
+            color("░" * (W - filled), "INFO", colors)
+        )
+        _b = BOLD  if colors else ""
+        _r = RESET if colors else ""
+        _d = DIM   if colors else ""
+        _k = "\033[K" if colors else ""
+        label = phase[:22]
+        sys.stdout.write(
+            f"\r  {spin}  {_d}{label:<22}{_r}  {bar}  {_b}{percent:>3}%{_r}{_k}"
+        )
         sys.stdout.flush()
         if percent == 100 and "complete" in phase.lower():
             sys.stdout.write("\n")
 
     def finding_callback(finding: Finding):
-        # Clear the progress line before printing the finding
         if colors:
             sys.stdout.write("\r\033[K")
         else:
             sys.stdout.write("\r" + " " * 80 + "\r")
-        
-        sev = color(finding.severity, finding.severity, colors)
-        print(f"[{sev}] {finding.name} @ {finding.url}")
+
+        _col  = COLORS.get(finding.severity, "") if colors else ""
+        _rst  = RESET if colors else ""
+        _bold = BOLD  if colors else ""
+        _dim  = DIM   if colors else ""
+        _sev  = f"{_col}{_bold} {finding.severity:<6}{_rst}"
+        _name = f"{_bold}{finding.name}{_rst}"
+        print(f"  {_sev}  {_name}")
+        # strip scheme for compactness
+        short_url = finding.url.replace("https://", "").replace("http://", "")
+        print(f"          {_dim}{short_url}{_rst}")
         if finding.parameter:
-            print(f"      Parameter: {finding.parameter}")
-        print(f"      Evidence: {finding.evidence}")
+            print(f"          {_dim}param  {_rst}{finding.parameter}")
         sys.stdout.flush()
 
     if not args.quiet and args.format == "text":
@@ -146,11 +155,12 @@ def run_scan(args: argparse.Namespace) -> int:
     return 1 if summarize_findings(result.findings).get(HIGH, 0) else 0
 
 def build_interactive_args(input_fn=input) -> argparse.Namespace:
-    print("Xploit Interactive Setup")
-    print("-" * 50)
-    url = prompt_required_text("Target URL", input_fn=input_fn)
-    depth = prompt_int("Crawl depth", default=4, input_fn=input_fn)
-    max_pages = prompt_int("Max pages to crawl", default=500, input_fn=input_fn)
+    print(f"{DIM}target  ›{RESET}", end=" ", flush=True)
+    url = prompt_required_text("", input_fn=input_fn)
+    print(f"{DIM}depth   ›{RESET}", end=" ", flush=True)
+    depth = prompt_int("", default=4, input_fn=input_fn)
+    print(f"{DIM}pages   ›{RESET}", end=" ", flush=True)
+    max_pages = prompt_int("", default=500, input_fn=input_fn)
 
     return argparse.Namespace(
         url=url,
@@ -187,14 +197,17 @@ def apply_request_overrides(scanner: WebScanner, headers: list[str], cookies: li
         scanner.session.cookies.set(name, value)
 
 def prompt_required_text(label: str, *, input_fn: Callable[[str], str]) -> str:
+    prompt = f"{label}: " if label else ""
     while True:
-        value = input_fn(f"{label}: ").strip()
+        value = input_fn(prompt).strip()
         if value: return value
-        print(f"{label} is required.")
+        if label:
+            print(f"{label} is required.")
 
 def prompt_int(label: str, *, default: int, input_fn: Callable[[str], str]) -> int:
+    prompt = f"{label} [{default}]: " if label else f"[{default}]: "
     while True:
-        raw = input_fn(f"{label} [{default}]: ").strip()
+        raw = input_fn(prompt).strip()
         if not raw: return default
         try:
             val = int(raw)

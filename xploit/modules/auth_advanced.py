@@ -1,297 +1,146 @@
 from __future__ import annotations
-import re
+from urllib.parse import parse_qs, urlparse
 from .base import BaseModule
-from ..scanner import Finding, HIGH, MEDIUM, LOW
+from ..scanner import Finding, MEDIUM
 
 class AdvancedAuthModule(BaseModule):
-    """Detects advanced authentication and session management issues"""
-    name = "Advanced Authentication Issues"
+    """Detects authentication and session management issues"""
+    name = "Authentication & Session Issues"
     category = "Authentication"
 
     def run(self):
         self._check_username_enumeration()
-        self._check_weak_password_policy()
         self._check_session_management()
-        self._check_default_credentials()
 
     def _check_username_enumeration(self):
-        """Detect username enumeration vulnerabilities"""
         for form in self.scanner.forms:
-            # Look for login forms
-            if any('password' in inp_type for inp_type in form.input_types.values()):
-                # Check if there's a username/email field
-                username_fields = [name for name in form.inputs.keys()
-                                 if any(x in name.lower() for x in ['user', 'email', 'login', 'name'])]
+            if not any('password' in t for t in form.input_types.values()):
+                continue
 
-                if username_fields:
-                    # Test with valid-looking and invalid usernames
-                    test_cases = [
-                        ("admin", "wrongpass"),
-                        ("nonexistent_user_12345", "wrongpass")
-                    ]
+            username_fields = [
+                n for n in form.inputs
+                if any(x in n.lower() for x in ['user', 'email', 'login', 'name'])
+            ]
+            if not username_fields:
+                continue
 
-                    responses = []
-                    for username, password in test_cases:
-                        data = dict(form.inputs)
-                        data[username_fields[0]] = username
-                        # Find password field
-                        pwd_field = [k for k, v in form.input_types.items() if v == 'password']
-                        if pwd_field:
-                            data[pwd_field[0]] = password
+            pwd_fields = [k for k, v in form.input_types.items() if v == 'password']
+            if not pwd_fields:
+                continue
 
-                        res = self.scanner._request(form.method, form.action,
-                                                   data=data if form.method == "POST" else None,
-                                                   params=data if form.method == "GET" else None)
-                        if res:
-                            responses.append((username, len(res.text), res.text))
+            ufield = username_fields[0]
+            pfield = pwd_fields[0]
 
-                    # Check for different responses
-                    if len(responses) == 2:
-                        if abs(responses[0][1] - responses[1][1]) > 50:  # Significant size difference
-                            self.add_finding(Finding(
-                                id="AUTH-002",
-                                name="Username Enumeration via Response Timing/Size",
-                                category="Authentication",
-                                severity=MEDIUM,
-                                confidence="Medium",
-                                url=form.action,
-                                method=form.method,
-                                evidence=f"Different response sizes: {responses[0][1]} vs {responses[1][1]} bytes",
-                                impact="Attackers can enumerate valid usernames, enabling targeted password attacks.",
-                                remediation="Return identical responses for valid and invalid usernames.",
-                                cwe="CWE-204"
-                            ))
-                        # Check for different error messages
-                        elif responses[0][2] != responses[1][2]:
-                            error_patterns = [
-                                "user not found", "invalid user", "user does not exist",
-                                "incorrect password", "wrong password", "invalid credentials"
-                            ]
-                            resp0_lower = responses[0][2].lower()
-                            resp1_lower = responses[1][2].lower()
+            responses = []
+            for username in ("admin", "nonexistent_user_xploit_99z"):
+                data = dict(form.inputs)
+                data[ufield] = username
+                data[pfield] = "wrongpass_xploit"
+                res = self.scanner._request(
+                    form.method, form.action,
+                    data=data if form.method == "POST" else None,
+                    params=data if form.method == "GET" else None,
+                )
+                if res:
+                    responses.append((username, len(res.text), res.text.lower()))
 
-                            if any(p in resp0_lower or p in resp1_lower for p in error_patterns):
-                                if resp0_lower != resp1_lower:
-                                    self.add_finding(Finding(
-                                        id="AUTH-003",
-                                        name="Username Enumeration via Error Messages",
-                                        category="Authentication",
-                                        severity=MEDIUM,
-                                        confidence="High",
-                                        url=form.action,
-                                        method=form.method,
-                                        evidence="Different error messages for valid/invalid usernames",
-                                        impact="Attackers can enumerate valid usernames through distinct error messages.",
-                                        remediation="Use generic error messages like 'Invalid credentials'.",
-                                        cwe="CWE-204"
-                                    ))
+            if len(responses) != 2:
+                continue
 
-    def _check_weak_password_policy(self):
-        """Check for weak password policy indicators"""
-        for form in self.scanner.forms:
-            if any('password' in inp_type for inp_type in form.input_types.values()):
-                # Try common weak passwords
-                weak_passwords = ["password", "123456", "admin", "test"]
+            size0, size1 = responses[0][1], responses[1][1]
+            text0, text1 = responses[0][2], responses[1][2]
 
-                # Look for registration or password change forms
-                action_lower = form.action.lower()
-                if any(x in action_lower for x in ['register', 'signup', 'create', 'password']):
-                    # Test if weak password is accepted (in passive mode, just check form attributes)
-                    password_fields = [k for k, v in form.input_types.items() if v == 'password']
+            # Size-based: require a substantial diff (>300 bytes) to avoid noise from
+            # dynamic elements like timestamps, session IDs, or minor layout changes.
+            if abs(size0 - size1) > 300:
+                self.add_finding(Finding(
+                    id="AUTH-004",
+                    name="Username Enumeration via Response Size",
+                    category="Authentication",
+                    severity=MEDIUM,
+                    confidence="Medium",
+                    url=form.action,
+                    method=form.method,
+                    evidence=f"Response size differs by {abs(size0 - size1)} bytes for valid vs invalid username",
+                    impact="Attackers can enumerate valid usernames, enabling targeted brute-force attacks.",
+                    remediation="Return identical responses for valid and invalid usernames.",
+                    cwe="CWE-204"
+                ))
+                continue
 
-                    # Check for password policy indicators in page
-                    page_response = self.scanner.pages.get(form.page_url)
-                    if page_response:
-                        text_lower = page_response.text.lower()
-                        has_policy = any(indicator in text_lower for indicator in [
-                            'minimum length', 'special character', 'uppercase',
-                            'lowercase', 'number required', 'password strength'
-                        ])
-
-                        if not has_policy and password_fields:
-                            # Check HTML5 pattern attribute
-                            has_html_validation = False
-                            # This is a heuristic check
-                            if 'pattern=' in page_response.text or 'minlength=' in page_response.text:
-                                has_html_validation = True
-
-                            if not has_html_validation:
-                                self.add_finding(Finding(
-                                    id="AUTH-004",
-                                    name="Weak Password Policy",
-                                    category="Authentication",
-                                    severity=MEDIUM,
-                                    confidence="Low",
-                                    url=form.action,
-                                    method=form.method,
-                                    evidence="No password complexity requirements detected in form",
-                                    impact="Weak passwords make accounts vulnerable to brute-force and dictionary attacks.",
-                                    remediation="Enforce minimum 8 characters, mixed case, numbers, and special characters.",
-                                    cwe="CWE-521"
-                                ))
+            # Message-based: only flag if a specific distinguishing error phrase
+            # appears for one username but not the other.
+            distinct_errors = [
+                "user not found", "invalid user", "user does not exist",
+                "incorrect password", "wrong password",
+            ]
+            for phrase in distinct_errors:
+                in0 = phrase in text0
+                in1 = phrase in text1
+                if in0 != in1:
+                    self.add_finding(Finding(
+                        id="AUTH-003",
+                        name="Username Enumeration via Error Messages",
+                        category="Authentication",
+                        severity=MEDIUM,
+                        confidence="High",
+                        url=form.action,
+                        method=form.method,
+                        evidence=f"Error message '{phrase}' present for one username but not the other",
+                        impact="Attackers can determine valid usernames through distinct error messages.",
+                        remediation="Use a generic message like 'Invalid credentials' for all failures.",
+                        cwe="CWE-204"
+                    ))
+                    break
 
     def _check_session_management(self):
-        """Check for session management issues"""
         for url, response in self.scanner.pages.items():
             if not response:
                 continue
 
-            # Check for session tokens in URL
-            if any(x in url.lower() for x in ['sessionid', 'session', 'sid', 'token', 'auth']):
-                from urllib.parse import parse_qs, urlparse
-                parsed = urlparse(url)
-                params = parse_qs(parsed.query)
+            # Session token exposed in URL query string
+            parsed = urlparse(url)
+            for param in parse_qs(parsed.query):
+                if any(x in param.lower() for x in ['sessionid', 'session', 'sid', 'token', 'auth']):
+                    self.add_finding(Finding(
+                        id="AUTH-005",
+                        name="Session Token in URL",
+                        category="Session Management",
+                        severity=MEDIUM,
+                        confidence="High",
+                        url=url,
+                        parameter=param,
+                        evidence=f"Session-like parameter '{param}' exposed in URL",
+                        impact="Tokens in URLs leak through Referer headers, browser history, and server logs.",
+                        remediation="Use HttpOnly cookies for session tokens, never pass them in URLs.",
+                        cwe="CWE-598"
+                    ))
 
-                for param, values in params.items():
-                    if any(x in param.lower() for x in ['session', 'sid', 'token', 'auth']):
-                        self.add_finding(Finding(
-                            id="AUTH-005",
-                            name="Session Token in URL",
-                            category="Session Management",
-                            severity=MEDIUM,
-                            confidence="High",
-                            url=url,
-                            parameter=param,
-                            evidence=f"Session token '{param}' exposed in URL",
-                            impact="Session tokens in URLs can be leaked through Referer headers, logs, and browser history.",
-                            remediation="Use secure, HTTPOnly cookies for session management.",
-                            cwe="CWE-598"
-                        ))
-
-            # Check for session fixation indicators
+            # Insecure session cookie flags — only flag when the URL clearly belongs to
+            # a login/auth flow, the response actually sets a session cookie, and both
+            # Secure AND HttpOnly are absent (either missing on HTTPS is enough for HIGH,
+            # but we report MEDIUM here as a conservative heuristic).
             set_cookie = response.headers.get("Set-Cookie", "")
-            if set_cookie:
-                # Check if session cookie is set before authentication
-                if "session" in set_cookie.lower() or "sid" in set_cookie.lower():
-                    # Check if we're on a login page
-                    if any(x in url.lower() for x in ['login', 'signin', 'auth']):
-                        # Check if the session cookie lacks Secure and HTTPOnly flags
-                        if "Secure" not in set_cookie or "HttpOnly" not in set_cookie:
-                            self.add_finding(Finding(
-                                id="AUTH-006",
-                                name="Insecure Session Cookie Flags",
-                                category="Session Management",
-                                severity=MEDIUM,
-                                confidence="High",
-                                url=url,
-                                evidence=f"Session cookie missing Secure or HttpOnly flags",
-                                impact="Session cookies without proper flags are vulnerable to interception and XSS attacks.",
-                                remediation="Set Secure, HttpOnly, and SameSite flags on session cookies.",
-                                cwe="CWE-614"
-                            ))
-
-    def _check_default_credentials(self):
-        """Actually test for common default credentials"""
-        login_forms = []
-        for form in self.scanner.forms:
-            if any('password' in inp_type for inp_type in form.input_types.values()):
-                login_forms.append(form)
-
-        # Comprehensive default credentials list
-        default_creds = [
-            # Admin accounts
-            ("admin", "admin"),
-            ("admin", "password"),
-            ("admin", "12345"),
-            ("admin", "admin123"),
-            ("administrator", "administrator"),
-            ("administrator", "password"),
-            # Root accounts
-            ("root", "root"),
-            ("root", "password"),
-            ("root", "toor"),
-            ("root", "12345"),
-            # Database defaults
-            ("sa", ""),  # SQL Server
-            ("postgres", "postgres"),
-            ("mysql", "mysql"),
-            ("oracle", "oracle"),
-            # Service accounts
-            ("guest", "guest"),
-            ("user", "user"),
-            ("test", "test"),
-            ("demo", "demo"),
-            # IoT/Router defaults
-            ("admin", ""),  # Empty password
-            ("admin", "1234"),
-            ("admin", "admin1"),
-            ("support", "support"),
-            # Application defaults
-            ("tomcat", "tomcat"),
-            ("weblogic", "weblogic"),
-            ("jenkins", "jenkins"),
-        ]
-
-        for form in login_forms[:1]:  # Limit to first form to avoid excessive requests
-            username_fields = [name for name in form.inputs.keys()
-                             if any(x in name.lower() for x in ['user', 'email', 'login', 'name', 'username'])]
-            password_fields = [k for k, v in form.input_types.items() if v == 'password']
-
-            if username_fields and password_fields:
-                username_field = username_fields[0]
-                password_field = password_fields[0]
-
-                # Test common credentials (limit to top 10 to avoid excessive requests)
-                for username, password in default_creds[:10]:
-                    data = dict(form.inputs)
-                    data[username_field] = username
-                    data[password_field] = password
-
-                    res = self.scanner._request(form.method, form.action,
-                                               data=data if form.method == "POST" else None,
-                                               params=data if form.method == "GET" else None)
-
-                    if res:
-                        # Check for successful login indicators
-                        success_indicators = [
-                            "welcome", "dashboard", "logout", "profile",
-                            "success", "logged in", "session", "account",
-                            "home", "panel", "menu"
-                        ]
-
-                        # Check for failure indicators
-                        failure_indicators = [
-                            "invalid", "incorrect", "failed", "error",
-                            "wrong", "denied", "unauthorized"
-                        ]
-
-                        response_lower = res.text.lower()
-
-                        # Successful login detection
-                        has_success = any(ind in response_lower for ind in success_indicators)
-                        has_failure = any(ind in response_lower for ind in failure_indicators)
-
-                        # Also check for redirect (common success pattern)
-                        is_redirect = res.status_code in [301, 302, 303, 307, 308]
-
-                        if (has_success and not has_failure) or is_redirect:
-                            self.add_finding(Finding(
-                                id="AUTH-007",
-                                name="Default Credentials Accepted",
-                                category="Authentication",
-                                severity=HIGH,
-                                confidence="High",
-                                url=form.action,
-                                method=form.method,
-                                evidence=f"Login successful with credentials: {username}:{password}",
-                                impact="Default credentials allow unauthorized access. Attackers can compromise the entire application.",
-                                remediation="Immediately change default credentials. Enforce strong password policies. Disable default accounts.",
-                                cwe="CWE-798"
-                            ))
-                            return  # Stop after finding working credentials
-
-                # If we tested all without success, report that testing was done
-                self.add_finding(Finding(
-                    id="AUTH-008",
-                    name="Login Form Detected (Default Credentials Tested)",
-                    category="Authentication",
-                    severity=LOW,
-                    confidence="Low",
-                    url=form.action,
-                    method=form.method,
-                    evidence="Tested 10 common default credentials - none accepted",
-                    impact="Login form present. Manual testing with additional credential lists recommended.",
-                    remediation="Ensure all default credentials are changed and enforce unique passwords.",
-                    cwe="CWE-798"
-                ))
-                break  # Only test one form
+            if not set_cookie:
+                continue
+            is_auth_url = any(x in url.lower() for x in ['login', 'signin', 'auth'])
+            has_session_cookie = any(x in set_cookie.lower() for x in ['phpsessid', 'session', 'sid', 'jsessionid'])
+            if is_auth_url and has_session_cookie:
+                missing = []
+                if "Secure" not in set_cookie:
+                    missing.append("Secure")
+                if "HttpOnly" not in set_cookie:
+                    missing.append("HttpOnly")
+                if missing:
+                    self.add_finding(Finding(
+                        id="AUTH-006",
+                        name="Insecure Session Cookie Flags",
+                        category="Session Management",
+                        severity=MEDIUM,
+                        confidence="High",
+                        url=url,
+                        evidence=f"Session cookie missing flag(s): {', '.join(missing)}",
+                        impact="Session cookies without Secure/HttpOnly are vulnerable to network interception and XSS theft.",
+                        remediation="Set Secure, HttpOnly, and SameSite=Strict on all session cookies.",
+                        cwe="CWE-614"
+                    ))
