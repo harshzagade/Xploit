@@ -1,7 +1,17 @@
 from __future__ import annotations
+import re
 from urllib.parse import parse_qs, urlparse
 from .base import BaseModule
 from ..scanner import Finding, MEDIUM
+
+# Whole-name matches for session-token URL params. Matched against tokenized
+# param names so 'consideration' (sid), 'author' (auth) etc. don't false-positive.
+_SESSION_URL_TOKENS = {'sessionid', 'session', 'sid', 'token', 'auth', 'auth_token'}
+
+def _name_tokens(name: str) -> set[str]:
+    """Split a param name on _, -, whitespace and camelCase boundaries."""
+    spaced = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
+    return {t.lower() for t in re.split(r'[_\-\s]+', spaced) if t}
 
 class AdvancedAuthModule(BaseModule):
     """Detects authentication and session management issues"""
@@ -98,10 +108,11 @@ class AdvancedAuthModule(BaseModule):
             if not response:
                 continue
 
-            # Session token exposed in URL query string
+            # Session token exposed in URL query string — tokenized whole-token
+            # match, so 'consideration'/'author'/'authenticity' don't flag.
             parsed = urlparse(url)
             for param in parse_qs(parsed.query):
-                if any(x in param.lower() for x in ['sessionid', 'session', 'sid', 'token', 'auth']):
+                if _name_tokens(param) & _SESSION_URL_TOKENS:
                     self.add_finding(Finding(
                         id="AUTH-005",
                         name="Session Token in URL",
@@ -120,17 +131,47 @@ class AdvancedAuthModule(BaseModule):
             # a login/auth flow, the response actually sets a session cookie, and both
             # Secure AND HttpOnly are absent (either missing on HTTPS is enough for HIGH,
             # but we report MEDIUM here as a conservative heuristic).
-            set_cookie = response.headers.get("Set-Cookie", "")
-            if not set_cookie:
+            # Iterate ALL Set-Cookie headers (requests only exposes the last via
+            # response.headers) and compare case-insensitively per RFC 6265.
+            raw_cookie = response.headers.get("Set-Cookie", "")
+            if hasattr(response.raw, "headers") and hasattr(response.raw.headers, "getlist"):
+                all_set_cookie = response.raw.headers.getlist("Set-Cookie")
+            else:
+                all_set_cookie = [raw_cookie] if raw_cookie else []
+            if not any(all_set_cookie):
                 continue
             is_auth_url = any(x in url.lower() for x in ['login', 'signin', 'auth'])
-            has_session_cookie = any(x in set_cookie.lower() for x in ['phpsessid', 'session', 'sid', 'jsessionid'])
-            if is_auth_url and has_session_cookie:
+            if not is_auth_url:
+                continue
+            for cookie_str in all_set_cookie:
+                if not cookie_str:
+                    continue
+                lowered = cookie_str.lower()
+                cookie_name = lowered.split(";")[0].split("=")[0].strip()
+                if not any(x in cookie_name for x in ['phpsessid', 'session', 'sid', 'jsessionid']):
+                    continue
+                attrs = {
+                    seg.strip().split("=")[0]
+                    for seg in lowered.split(";")[1:]
+                    if seg.strip()
+                }
                 missing = []
-                if "Secure" not in set_cookie:
+                if "secure" not in attrs:
                     missing.append("Secure")
-                if "HttpOnly" not in set_cookie:
+                if "httponly" not in attrs:
                     missing.append("HttpOnly")
+                # Don't re-report flags general.py already flagged for this
+                # cookie+URL (COOK-001=HttpOnly, COOK-002=Secure). GeneralModule
+                # always runs before this module, so its keys are present.
+                # (COOK-002 only fires on HTTPS; on HTTP the Secure finding
+                # here is still wanted.)
+                flag_to_cook = {"Secure": "COOK-002", "HttpOnly": "COOK-001"}
+                already = {
+                    (fid, u, (param or "").lower())
+                    for fid, u, param in getattr(self.scanner, "_finding_keys", set())
+                }
+                missing = [f for f in missing
+                           if (flag_to_cook[f], url, cookie_name) not in already]
                 if missing:
                     self.add_finding(Finding(
                         id="AUTH-006",
@@ -139,7 +180,8 @@ class AdvancedAuthModule(BaseModule):
                         severity=MEDIUM,
                         confidence="High",
                         url=url,
-                        evidence=f"Session cookie missing flag(s): {', '.join(missing)}",
+                        parameter=cookie_name,
+                        evidence=f"Session cookie '{cookie_name}' missing flag(s): {', '.join(missing)}",
                         impact="Session cookies without Secure/HttpOnly are vulnerable to network interception and XSS theft.",
                         remediation="Set Secure, HttpOnly, and SameSite=Strict on all session cookies.",
                         cwe="CWE-614"

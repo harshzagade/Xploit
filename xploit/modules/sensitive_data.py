@@ -62,7 +62,7 @@ class SensitiveDataModule(BaseModule):
     INTERNAL_IP_PATTERN = re.compile(r'\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})\b')
 
     # Email addresses (potential PII)
-    EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b')
+    EMAIL_PATTERN = re.compile(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b')
 
     # Values to skip — common placeholders that would produce FPs
     _PLACEHOLDER_VALUES = {
@@ -84,8 +84,12 @@ class SensitiveDataModule(BaseModule):
         text = response.text
         content_type = response.headers.get("Content-Type", "").lower()
 
-        # Skip binary content
-        if "text" not in content_type and "json" not in content_type and "xml" not in content_type:
+        # Skip binary content. JavaScript must be scanned — the hardcoded-secret
+        # patterns specifically target JS source (apiKey = ..., localStorage).
+        # Responses with no Content-Type header are scanned rather than skipped.
+        if content_type and not any(
+            x in content_type for x in ("text", "json", "xml", "javascript", "ecmascript")
+        ):
             return
 
         # Check for credit cards
@@ -153,7 +157,7 @@ class SensitiveDataModule(BaseModule):
                     severity=HIGH,
                     confidence="High",
                     url=url,
-                    evidence=f"Database connection string detected: {matches[0][:50]}...",
+                    evidence=self._redacted_conn_evidence(matches[0]),
                     impact="Exposed credentials can lead to unauthorized database access.",
                     remediation="Never expose database connection strings. Use environment variables.",
                     cwe="CWE-798"
@@ -171,7 +175,7 @@ class SensitiveDataModule(BaseModule):
                     severity=HIGH,
                     confidence="High",
                     url=url,
-                    evidence=f"Cloud API credential detected",
+                    evidence="Cloud API credential detected",
                     impact="Exposed cloud credentials can lead to unauthorized access to cloud resources and data breaches.",
                     remediation="Rotate exposed credentials immediately. Use secret management services.",
                     cwe="CWE-798"
@@ -253,6 +257,21 @@ class SensitiveDataModule(BaseModule):
                 remediation="Implement pagination and access controls for endpoints returning user data.",
                 cwe="CWE-359"
             ))
+
+    def _redacted_conn_evidence(self, match: str) -> str:
+        """Describe a DB connection string without embedding secrets in evidence.
+
+        Raw connection-string text (including partial passwords) must never
+        reach reports — only field names are shown, the secret portion redacted.
+        """
+        fields = [f.strip() for f in dict.fromkeys(
+            f for f in re.findall(r"(?i)\b([a-z][a-z0-9 _]{1,20})\s*=", match)
+        )]
+        if "://" in match:
+            scheme = match.split("://", 1)[0].split(":")[-1]
+            fields.insert(0, f"{scheme} URL")
+        detail = ", ".join(fields) if fields else "connection string"
+        return f"Database connection string detected (fields: {detail}; secret redacted)"
 
     def _luhn_check(self, card_number):
         """Validate credit card using Luhn algorithm to reduce false positives"""

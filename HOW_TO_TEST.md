@@ -15,11 +15,10 @@ xploit http://127.0.0.1:5000/ --mode full --depth 3
 ```
 
 ### Expected Results:
-- 13 HIGH severity findings
-  - 1x SQL Injection
-  - 12x XSS vulnerabilities
-- 2 MEDIUM findings (missing headers)
-- 3 LOW findings
+- 11 findings: 5 HIGH, 4 MEDIUM, 1 LOW, 1 INFO
+  - HIGH: SQL Injection, XSS, and authentication/transport issues
+  - MEDIUM: missing security headers, misconfigurations
+  - LOW / INFO: informational disclosures
 
 ### Manual Testing:
 

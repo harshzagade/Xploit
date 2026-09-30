@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
+import time
 from collections.abc import Callable
 
 from . import __version__
@@ -52,6 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rate-limit", type=float, default=0.0, help="minimum delay between HTTP requests in seconds")
     parser.add_argument("--scope-prefix", default="/", help="restrict crawling/checks to a path prefix")
     parser.add_argument("--format", choices=("text", "json"), default="text", help="output format")
+    parser.add_argument("--output", metavar="PATH", default=None, help="write the report to a file (ANSI colors stripped)")
+    parser.add_argument("--retest", action="store_true", help="re-fire each finding's proof request to confirm it still reproduces (active traffic; skipped in passive mode)")
     parser.add_argument("--header", action="append", default=[], metavar="NAME: VALUE", help="add a custom HTTP header; may be repeated")
     parser.add_argument("--cookie", action="append", default=[], metavar="NAME=VALUE", help="add a cookie; may be repeated")
     parser.add_argument("--insecure", action="store_true", help="disable SSL certificate verification")
@@ -74,26 +78,38 @@ def run_scan(args: argparse.Namespace) -> int:
         print(banner(colors))
         print("")
 
-    scanner = WebScanner(
-        args.url,
-        depth=args.depth,
-        max_pages=args.max_pages,
-        timeout=args.timeout,
-        mode=args.mode,
-        rate_limit=args.rate_limit,
-        scope_prefix=args.scope_prefix,
-        verify=not args.insecure,
-    )
+    try:
+        scanner = WebScanner(
+            args.url,
+            depth=args.depth,
+            max_pages=args.max_pages,
+            timeout=args.timeout,
+            mode=args.mode,
+            rate_limit=args.rate_limit,
+            scope_prefix=args.scope_prefix,
+            verify=not args.insecure,
+        )
+    except ValueError as exc:
+        print(color(f"error: {exc}", HIGH, colors), file=sys.stderr)
+        return 2
     try:
         apply_request_overrides(scanner, args.header, args.cookie)
     except ValueError as exc:
         print(color(f"error: {exc}", HIGH, colors), file=sys.stderr)
         return 2
 
-    def progress_callback(current: int, total: int, phase: str):
-        _SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
-        spin    = color(_SPIN[current % len(_SPIN)], "OK", colors)
-        percent = max(0, min(100, int((current / total) * 100))) if total > 0 else 0
+    # Progress state shared by the phase callback and the per-request tick.
+    # Module runs fire hundreds of sequential requests with no phase change;
+    # without the tick the bar looks frozen for minutes on slow targets.
+    _ui_lock = threading.Lock()
+    _ui_state = {"current": 0, "total": 1, "phase": "", "tick": 0,
+                 "requests": 0, "last_draw": 0.0}
+    _SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+    def _redraw():
+        st = _ui_state
+        spin    = color(_SPIN[st["tick"] % len(_SPIN)], "OK", colors)
+        percent = max(0, min(100, int((st["current"] / st["total"]) * 100))) if st["total"] > 0 else 0
         W       = 28
         filled  = int((percent / 100) * W)
         bar     = (
@@ -104,37 +120,57 @@ def run_scan(args: argparse.Namespace) -> int:
         _r = RESET if colors else ""
         _d = DIM   if colors else ""
         _k = "\033[K" if colors else ""
-        label = phase[:22]
+        label = st["phase"][:22]
+        req = f"  {_d}{st['requests']} req{_r}" if st["requests"] else ""
         sys.stdout.write(
-            f"\r  {spin}  {_d}{label:<22}{_r}  {bar}  {_b}{percent:>3}%{_r}{_k}"
+            f"\r  {spin}  {_d}{label:<22}{_r}  {bar}  {_b}{percent:>3}%{_r}{req}{_k}"
         )
         sys.stdout.flush()
-        if percent == 100 and "complete" in phase.lower():
+        st["last_draw"] = time.monotonic()
+        if percent == 100 and "complete" in st["phase"].lower():
             sys.stdout.write("\n")
 
-    def finding_callback(finding: Finding):
-        if colors:
-            sys.stdout.write("\r\033[K")
-        else:
-            sys.stdout.write("\r" + " " * 80 + "\r")
+    def progress_callback(current: int, total: int, phase: str):
+        with _ui_lock:
+            _ui_state.update(current=current, total=total, phase=phase,
+                             tick=_ui_state["tick"] + 1)
+            _redraw()
 
-        _col  = COLORS.get(finding.severity, "") if colors else ""
-        _rst  = RESET if colors else ""
-        _bold = BOLD  if colors else ""
-        _dim  = DIM   if colors else ""
-        _sev  = f"{_col}{_bold} {finding.severity:<6}{_rst}"
-        _name = f"{_bold}{finding.name}{_rst}"
-        print(f"  {_sev}  {_name}")
-        # strip scheme for compactness
-        short_url = finding.url.replace("https://", "").replace("http://", "")
-        print(f"          {_dim}{short_url}{_rst}")
-        if finding.parameter:
-            print(f"          {_dim}param  {_rst}{finding.parameter}")
-        sys.stdout.flush()
+    def request_callback(count: int):
+        # Throttled heartbeat: redraw at most ~5x/sec so slow sequential
+        # module runs visibly advance instead of looking frozen.
+        with _ui_lock:
+            _ui_state["requests"] = count
+            _ui_state["tick"] += 1
+            if time.monotonic() - _ui_state["last_draw"] >= 0.2:
+                _redraw()
+
+    def finding_callback(finding: Finding):
+        with _ui_lock:
+            if colors:
+                sys.stdout.write("\r\033[K")
+            else:
+                sys.stdout.write("\r" + " " * 80 + "\r")
+
+            _col  = COLORS.get(finding.severity, "") if colors else ""
+            _rst  = RESET if colors else ""
+            _bold = BOLD  if colors else ""
+            _dim  = DIM   if colors else ""
+            _sev  = f"{_col}{_bold} {finding.severity:<6}{_rst}"
+            _name = f"{_bold}{finding.name}{_rst}"
+            print(f"  {_sev}  {_name}")
+            # strip scheme for compactness
+            short_url = finding.url.replace("https://", "").replace("http://", "")
+            print(f"          {_dim}{short_url}{_rst}")
+            if finding.parameter:
+                print(f"          {_dim}param  {_rst}{finding.parameter}")
+            sys.stdout.flush()
+            _ui_state["last_draw"] = 0.0  # force next tick to redraw
 
     if not args.quiet and args.format == "text":
         scanner.on_progress = progress_callback
         scanner.on_finding = finding_callback
+        scanner.on_request = request_callback
 
     try:
         result = scanner.scan()
@@ -145,11 +181,33 @@ def run_scan(args: argparse.Namespace) -> int:
         print(color("\nscan interrupted", "MEDIUM", colors), file=sys.stderr)
         return 130
 
+    if args.retest:
+        from .retest import retest_findings, retest_summary_line
+        # Unwire the live progress tick: retest replay requests would otherwise
+        # redraw the bar at 100% still labeled "Checks complete".
+        scanner.on_request = None
+        stats = retest_findings(scanner, result.findings)
+        if not args.quiet and args.format == "text":
+            print(color(retest_summary_line(stats), "MEDIUM", colors))
+
     if args.format == "json":
-        print(render_json_report(result))
+        content = render_json_report(result)
     else:
         from .reporting import render_text_report
-        print(render_text_report(result))
+        content = render_text_report(result)
+
+    if args.output:
+        from .reporting import strip_ansi, write_report
+        # ANSI stripping is for human-readable text only — JSON evidence may
+        # legitimately contain "\x1b[<nums>m"-shaped sequences that must not
+        # be silently deleted from the saved report.
+        write_report(strip_ansi(content) if args.format == "text" else content,
+                     args.output)
+        if not args.quiet:
+            # stderr, not stdout: keeps piped --format json output parseable.
+            print(f"report written to {args.output}", file=sys.stderr)
+    else:
+        print(content)
     if result.status == "unreachable":
         return 2
     return 1 if summarize_findings(result.findings).get(HIGH, 0) else 0
@@ -171,6 +229,8 @@ def build_interactive_args(input_fn=input) -> argparse.Namespace:
         rate_limit=0.0,
         scope_prefix="/",
         format="text",
+        output=None,
+        retest=False,
         header=[],
         cookie=[],
         insecure=False,
@@ -253,6 +313,9 @@ def render_text_result(result: ScanResult, *, colors: bool = True) -> None:
         if finding.parameter:
             print(f"     Parameter: {finding.parameter}")
         print(f"     Evidence: {finding.evidence}")
+        print(f"     Verified: {'yes (replayable proof)' if finding.verified else 'no'}")
+        if finding.retest_status != "not_run":
+            print(f"     Retest: {finding.retest_status}")
         print(f"     Impact: {finding.impact}")
         print(f"     Remediation: {finding.remediation}")
         print("")

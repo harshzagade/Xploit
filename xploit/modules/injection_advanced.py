@@ -2,7 +2,7 @@ from __future__ import annotations
 from .base import BaseModule
 from ..scanner import Finding, HIGH, mutate_query
 
-class AdvancedInjectionModule(BaseModule):
+class CommandTraversalModule(BaseModule):
     name = "Command & Traversal Injection"
     category = "Injection"
 
@@ -35,13 +35,24 @@ class AdvancedInjectionModule(BaseModule):
         ]
         for payload in payloads:
             res = self._send(url, param, method, payload, base_data)
-            if res and "1337" in res.text and "1337" not in baseline_text and payload not in res.text:
+            # No payload contains "1337", so a literal reflection of the payload
+            # can never introduce the marker — the old `payload not in res.text`
+            # clause only suppressed true positives (e.g. a ping tool that echoes
+            # input AND evaluates it). The baseline check already handles static
+            # content containing "1337".
+            if res and "1337" in res.text and "1337" not in baseline_text:
                 self._report(url, param, method, payload, "Command Injection", "CMDI-001",
                              "Output-based command injection confirmed: arithmetic expression evaluated by shell.",
                              "CWE-78", "Command Injection")
                 return
 
     def _test_traversal(self, url, param, method, base_data=None):
+        # Baseline first: generic markers like "bin/bash" appear in docs/blogs,
+        # so the marker must be NEW relative to the unmodified response.
+        baseline = self._send(url, param, method, "traversal_baseline_xploit", base_data)
+        baseline_text = baseline.text if baseline else ""
+        markers = ["root:x:0:0:", "[extensions]", "[fonts]"]
+
         payloads = [
             "../../../../../../etc/passwd",
             "..\\..\\..\\..\\..\\..\\windows\\win.ini",
@@ -53,15 +64,15 @@ class AdvancedInjectionModule(BaseModule):
         ]
         for payload in payloads:
             res = self._send(url, param, method, payload, base_data)
-            if res and any(p in res.text for p in ["root:x:0:0:", "[extensions]", "bin/bash", "[fonts]"]):
+            if res and any(m in res.text and m not in baseline_text for m in markers):
                 self._report(url, param, method, payload, "Directory Traversal", "TRAV-001",
-                             f"Path traversal confirmed: OS file content detected in response.",
+                             "Path traversal confirmed: OS file content detected in response.",
                              "CWE-22", "Directory Traversal")
                 return
 
     def _send(self, url, param, method, payload, base_data=None):
         if method == "GET":
-            return self.scanner._request("GET", mutate_query(url, param, payload))
+            return self.scanner._request("GET", mutate_query(url, param, payload, base_data))
         else:
             data = dict(base_data) if base_data else {}
             data[param] = payload

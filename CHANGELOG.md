@@ -1,5 +1,94 @@
 # Changelog
 
+## Unreleased
+
+### Bug-fix pass (deep audit)
+- Fixed GET-form injection payloads being silently dropped: `mutate_query()`
+  now appends the parameter (plus sibling form fields) when the action URL
+  carries no query string, so SQLi/command/SSTI payloads actually reach the
+  target.
+- Fixed brute-force false positives: a redirect counts as login success only
+  when its target differs from the baseline redirect and doesn't point at
+  login/auth; removed bare "error" from failure indicators and the 2x-baseline
+  response-size heuristic.
+- Fixed brute-force credential stuffing of registration forms: signup/register
+  actions and confirm-password forms are excluded; bare "name" no longer
+  counts as a username (token-based matching).
+- Fixed path-traversal false positives: markers must be new relative to a
+  fresh benign baseline; generic `bin/bash` removed as standalone proof.
+- Fixed SQLi false positives: removed generic "database error" /
+  "internal server error" markers; error-based and stacked-query checks use
+  fresh baseline probes instead of stale crawl responses.
+- Fixed vacuous XSS confirmation: reflections are now judged by the markup
+  *before* the payload (comments, textarea/title/style/script and inert
+  attributes rejected); the payload itself must carry an active vector.
+  Evidence states script execution was not dynamically confirmed in a browser.
+- Fixed `--retest` misclassifying blocked/error responses as "fixed": HTTP
+  4xx/5xx, WAF/block pages, rate limits, failed replays and login redirects
+  are now `unverifiable`.
+- Fixed crawler dropping HTTP error pages (4xx/5xx forms/links were lost).
+- Fixed active payloads being delivered off-origin via cross-origin redirects
+  (re-issued unfollowed; same-origin chains unchanged).
+- Fixed unbounded crawl wait (now bounded, with stall reporting) and retries
+  (bounded, idempotent-only, POSTs never retried).
+- Fixed one crashing module aborting the whole scan (isolated per module).
+- Fixed `--scope-prefix` seeding (prefixed entry point added) and path
+  boundaries (`/api` no longer matches `/apiv2`).
+- Fixed cookie flag checks reading attributes instead of substring-matching
+  the raw header (a `secure_mode` cookie value no longer fakes the Secure
+  flag); all Set-Cookie headers inspected; session/CSRF field names
+  token-matched (`consideration`/`author`/`residue` no longer match).
+- Fixed open-redirect check to catch protocol-relative destinations
+  (`//example.com/...`).
+- Fixed sensitive-file/debug probes skipping 301-served files (single
+  in-scope redirect followed, off-origin never).
+- Fixed CORS severity logic (credential-aware) and duplicate probing.
+- Fixed duplicate cookie findings across modules (COOK-00x vs AUTH-006).
+- Fixed duplicate query parameters being collapsed in SQLi URL checks and
+  empty-body boolean-blind baselines being skipped.
+- Fixed XXE/SSTI/NoSQL checks: baseline-relative markers, distinctive SSTI
+  arithmetic (1337/1903), case-insensitive NoSQL matching, full payloads in
+  evidence, replayable proof attached for LDAP/XXE/XML/NoSQL/SSTI.
+- Fixed terminal escape injection via server-controlled finding fields
+  (sanitized before display); report file output keeps JSON evidence intact.
+- Fixed report box alignment, dangling verification dash, stale retest
+  progress redraws; "report written" notice now goes to stderr so piped JSON
+  stays parseable.
+- Added 5 MB HTML-parsing cap, thread-count clamp, case-insensitive origin
+  comparison with default-port handling, fragment stripping before crawl
+  dedup, lock-guarded request counters/rate limiting, userinfo stripping in
+  URLs, and clean `ValueError` for missing target URLs.
+- Fixed redirect handling: manual same-origin-only following (max 10 hops,
+  loop detection) replaces requests' 30-hop auto-follow. `javascript:`/non-HTTP
+  `Location` targets are never followed, redirect loops are reported instead of
+  stalling, and 307/308 POST bodies can never be forwarded off-origin.
+- Fixed XSS context analysis: a `javascript:` URI payload reflected into a
+  URL-bearing attribute (href/src/action/...) is now correctly treated as an
+  executable context; other attributes holding the same text stay inert.
+- Fixed `normalize_url`: non-HTTP(S) schemes like `ftp://` now raise
+  ValueError instead of being mangled into `http://ftp://...`.
+- Removed dead code: `IDOR_URL_PATTERNS`, `_render_finding_lines`.
+- Regression suite grew from 13 to 44 tests covering every fix above.
+
+### Evidence-gated findings + retest
+- Added `--retest`: re-fires each verified finding's proof request after the
+  scan and records `confirmed` / `fixed` / `unverifiable`. Refused in passive
+  mode (retest is active traffic by definition).
+- Added `--output PATH`: writes the report (text or JSON) to a file with ANSI
+  colors stripped.
+- SQLi and XSS modules now attach replayable proof to their findings.
+- Fixed IDOR probes running in passive mode (now gated with the other active checks).
+- Fixed crawler dedup keeping query parameter names (`/?sessionid=abc` crawls as
+  its own page; `/item?id=1` vs `/item?id=2` still dedupe by shape).
+- Fixed duplicate `AdvancedInjectionModule` class names
+  (`MultiVectorInjectionModule`, `CommandTraversalModule`).
+- Fixed email regex character class (`[A-Z|a-z]` → `[A-Za-z]`).
+- 404 responses during probing no longer logged as scan errors.
+- CORS check now evaluates every crawled page instead of stopping at the first hit.
+- Corrected README claims: 4 SQLi techniques (not 5, no time-based), output-based
+  command-injection detection, version badge 1.6.0, 11 expected findings on the
+  vulnerable test app (5 HIGH, 4 MEDIUM, 1 LOW, 1 INFO).
+
 ## 1.6.0
 
 - Consolidated the final scanner under the Xploit name.

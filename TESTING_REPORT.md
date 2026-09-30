@@ -35,7 +35,7 @@
 |---|-------------------|---------|---------------------|
 | 1 | **SQL Injection** | ❌ NO DETECTIONS | Only checks for error patterns - needs actual vulnerable backend |
 | 2 | **XSS** | ❌ NO DETECTIONS | Only checks for reflection - needs vulnerable response |
-| 3 | **Command Injection** | ❌ NO DETECTIONS | Requires time-delay or output - needs vulnerable backend |
+| 3 | **Command Injection** | ❌ NO DETECTIONS | Output-based detection - needs vulnerable backend |
 | 4 | **Directory Traversal** | ❌ NO DETECTIONS | Needs server to respond with file contents |
 | 5 | **Security Misconfiguration** | ❌ NO DETECTIONS on static | Checks risky HTTP methods (needs server) |
 | 6 | **Sensitive File Exposure** | ❌ NO DETECTIONS on static | Probes /.env, /.git - needs real paths |
@@ -69,7 +69,7 @@ LOW - Sensitive Information in HTML Comment
 ### ❌ **DOESN'T WORK (Needs Vulnerable Backend)**
 
 #### **1. SQL Injection**
-**Claim:** "SQL Injection (Error-based and Time-based)"
+**Claim:** "SQL Injection (Error, Union, Boolean, Stacked)"
 
 **Reality:**
 ```python
@@ -130,10 +130,10 @@ payload in response.text AND dangerous_tags_present
 **Why It Failed:**
 - ❌ No backend processing shell commands
 - ❌ Needs actual vulnerable CGI/system() call
-- ❌ Time-based needs server to execute sleep
+- ❌ Output-based detection needs the server to reflect command output
 
 **What You Should Say:**
-> "Xploit tests for command injection using time-based (sleep) and output-based (math expression) payloads. Detection requires a vulnerable backend that executes shell commands."
+> "Xploit tests for command injection using output-based payloads (math-expression evaluation reflected in the response). Detection requires a vulnerable backend that executes shell commands."
 
 ---
 

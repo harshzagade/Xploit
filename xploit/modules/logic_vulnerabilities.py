@@ -1,7 +1,23 @@
 from __future__ import annotations
-from urllib.parse import urlparse, urlunparse
+import re
+from urllib.parse import urlparse
 from .base import BaseModule
 from ..scanner import Finding, HIGH, mutate_query
+
+# Whole-token matches for CSRF token field names. Matched against tokenized
+# field names so 'residue' (contains 'sid') doesn't count as CSRF-protected.
+_CSRF_TOKEN_WORDS = {'csrf', 'xsrf', 'token', 'sid', 'nonce', 'crumb', 'authenticity'}
+
+def _has_csrf_token(field_names) -> bool:
+    for name in field_names:
+        spaced = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
+        tokens = {t.lower() for t in re.split(r'[_\-\s]+', spaced) if t}
+        if tokens & _CSRF_TOKEN_WORDS:
+            return True
+        # Known suffix forms like __requestverificationtoken
+        if name.lower().endswith('token'):
+            return True
+    return False
 
 class LogicVulnerabilityModule(BaseModule):
     name = "Business Logic Vulnerabilities"
@@ -12,19 +28,13 @@ class LogicVulnerabilityModule(BaseModule):
         self._check_open_redirect()
 
     def _check_csrf(self):
-        # Expanded list of common CSRF token names and prefixes
-        TOKEN_NAMES = (
-            "csrf", "xsrf", "token", "authenticity", "_sync", 
-            "__requestverificationtoken", "crumb", "sid"
-        )
         for form in self.scanner.forms:
             if form.method == "POST":
                 # Check if it looks like a state-changing form (has more than just a search field)
                 if len(form.inputs) <= 1 and any("search" in n.lower() for n in form.inputs):
                     continue
 
-                has_token = any(any(t in name.lower() for t in TOKEN_NAMES) for name in form.inputs)
-                if not has_token:
+                if not _has_csrf_token(form.inputs):
                     self.add_finding(Finding(
                         id="CSRF-001", name="State-Changing POST Form Missing Anti-CSRF Token",
                         category="Cross-Site Request Forgery (CSRF)", severity="MEDIUM", confidence="Medium",
@@ -37,6 +47,7 @@ class LogicVulnerabilityModule(BaseModule):
     def _check_open_redirect(self):
         REDIRECT_PARAMS = {"next", "url", "redirect", "return", "dest"}
         payload = "https://example.com/xploit-redirect"
+        payload_netloc = urlparse(payload).netloc.lower()
         for url in self.scanner.pages:
             from ..scanner import query_parameters
             for param in query_parameters(url):
@@ -44,12 +55,20 @@ class LogicVulnerabilityModule(BaseModule):
                     test_url = mutate_query(url, param, payload)
                     res = self.scanner._request("GET", test_url, allow_redirects=False)
                     if res and res.status_code in (301, 302, 303, 307, 308):
-                        if res.headers.get("Location", "").startswith(payload):
+                        location = res.headers.get("Location", "")
+                        # Compare parsed netlocs instead of startswith: catches
+                        # protocol-relative destinations (//example.com/...) too,
+                        # and won't fire on relative-path redirects.
+                        try:
+                            loc_netloc = urlparse(location).netloc.lower()
+                        except ValueError:
+                            continue
+                        if loc_netloc and loc_netloc == payload_netloc:
                             self.add_finding(Finding(
                                 id="REDIR-001", name="Open Redirect",
                                 category="Open Redirect", severity=HIGH, confidence="High",
                                 url=test_url, parameter=param,
-                                evidence=f"Redirects to external {payload}",
+                                evidence=f"Redirects to external {location}",
                                 impact="The application accepts an external redirect destination, which enables phishing, redirect-chain abuse, and possible token forwarding to attacker-controlled sites.",
                                 remediation="Use relative redirects.", cwe="CWE-601"
                             ))

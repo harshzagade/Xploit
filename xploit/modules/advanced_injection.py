@@ -1,9 +1,8 @@
 from __future__ import annotations
-import re
 from .base import BaseModule
 from ..scanner import Finding, HIGH, MEDIUM, mutate_query
 
-class AdvancedInjectionModule(BaseModule):
+class MultiVectorInjectionModule(BaseModule):
     """Detects LDAP, XML, NoSQL, and SSTI vulnerabilities"""
     name = "Advanced Injection Vulnerabilities"
     category = "Injection"
@@ -53,7 +52,7 @@ class AdvancedInjectionModule(BaseModule):
             res_lower = res.text.lower()
             matched = [e for e in ldap_errors if e.lower() in res_lower and e.lower() not in baseline_text]
             if matched:
-                self.add_finding(Finding(
+                finding = Finding(
                     id="LDAP-001",
                     name="LDAP Injection",
                     category="LDAP Injection",
@@ -67,7 +66,9 @@ class AdvancedInjectionModule(BaseModule):
                     impact="Attacker can bypass authentication or extract sensitive LDAP directory information.",
                     remediation="Use parameterized LDAP queries and escape special characters.",
                     cwe="CWE-90"
-                ))
+                )
+                self._attach_proof(finding, url, param, method, payload, base_data, matched[0])
+                self.add_finding(finding)
                 return
 
     def _test_xml_injection(self, url, param, method, base_data=None):
@@ -84,7 +85,8 @@ class AdvancedInjectionModule(BaseModule):
         baseline_text = baseline.text if baseline else ""
 
         # Only flag these if they appear in the payload response but NOT in baseline.
-        # "root:x:" is never in a normal HTML page, so no baseline check needed for it.
+        # "root:x:" gets the same baseline treatment — a page documenting
+        # /etc/passwd must not become an XXE finding.
         xxe_error_indicators = [
             "parser error",
             "XML syntax",
@@ -99,9 +101,11 @@ class AdvancedInjectionModule(BaseModule):
             if not res:
                 continue
 
-            # XXE file read success — highly specific, no false positive risk
-            if "root:x:" in res.text or "root:!" in res.text:
-                self.add_finding(Finding(
+            # XXE file read success — require the marker to be NEW relative to the
+            # baseline: a page about /etc/passwd would otherwise false-positive.
+            xxe_marker = "root:x:" if "root:x:" in res.text else ("root:!" if "root:!" in res.text else "")
+            if xxe_marker and xxe_marker not in baseline_text:
+                finding = Finding(
                     id="XXE-001",
                     name="XML External Entity (XXE) Injection",
                     category="XML Injection",
@@ -110,12 +114,14 @@ class AdvancedInjectionModule(BaseModule):
                     url=url,
                     parameter=param,
                     method=method,
-                    trigger=payload[:50],
+                    trigger=payload,
                     evidence="File content disclosure detected in response",
                     impact="Attacker can read local files, perform SSRF attacks, or cause denial of service.",
                     remediation="Disable external entity processing in XML parsers.",
                     cwe="CWE-611"
-                ))
+                )
+                self._attach_proof(finding, url, param, method, payload, base_data, xxe_marker)
+                self.add_finding(finding)
                 return
 
             # XML error indicators — only count ones NOT already in baseline
@@ -124,7 +130,7 @@ class AdvancedInjectionModule(BaseModule):
                 if ind.lower() in res.text.lower() and ind.lower() not in baseline_text.lower()
             ]
             if new_errors:
-                self.add_finding(Finding(
+                finding = Finding(
                     id="XML-001",
                     name="XML Injection",
                     category="XML Injection",
@@ -133,12 +139,14 @@ class AdvancedInjectionModule(BaseModule):
                     url=url,
                     parameter=param,
                     method=method,
-                    trigger=payload[:50],
+                    trigger=payload,
                     evidence=f"XML parsing error detected: {new_errors[0]}",
                     impact="Application may be vulnerable to XML injection attacks.",
                     remediation="Validate and sanitize XML input properly.",
                     cwe="CWE-91"
-                ))
+                )
+                self._attach_proof(finding, url, param, method, payload, base_data, new_errors[0])
+                self.add_finding(finding)
                 return
 
     def _test_nosql_injection(self, url, param, method, base_data=None):
@@ -162,13 +170,17 @@ class AdvancedInjectionModule(BaseModule):
         ]
 
         baseline = self._send(url, param, method, "nosql_baseline_xploit", base_data)
-        baseline_text = baseline.text if baseline else ""
+        baseline_text = baseline.text.lower() if baseline else ""
 
         for payload in payloads:
             res = self._send(url, param, method, payload, base_data)
-            matched = [e for e in nosql_errors if e in res.text and e not in baseline_text] if res else []
+            if not res:
+                continue
+            res_lower = res.text.lower()
+            matched = [e for e in nosql_errors
+                       if e.lower() in res_lower and e.lower() not in baseline_text]
             if matched:
-                self.add_finding(Finding(
+                finding = Finding(
                     id="NOSQL-001",
                     name="NoSQL Injection",
                     category="NoSQL Injection",
@@ -182,20 +194,25 @@ class AdvancedInjectionModule(BaseModule):
                     impact="Attacker can bypass authentication or extract sensitive database records.",
                     remediation="Use parameterized queries and validate input types.",
                     cwe="CWE-943"
-                ))
+                )
+                self._attach_proof(finding, url, param, method, payload, base_data, matched[0])
+                self.add_finding(finding)
                 return
 
     def _test_ssti(self, url, param, method, base_data=None):
         """Detect Server-Side Template Injection"""
         # Each entry: (probe_payload, probe_expected, confirm_payload, confirm_expected)
         # Two distinct math expressions per engine — both must evaluate correctly to confirm.
+        # Expected values are distinctive (1337/1903, never 49): "49" appears in
+        # prices, years and counters everywhere, which used to skip 5 of 6 engines
+        # because the baseline check fired on static content.
         test_cases = [
-            ("{{7*7}}", "49", "{{13*37}}", "481"),
-            ("${7*7}", "49", "${13*37}", "481"),
-            ("#{7*7}", "49", "#{13*37}", "481"),
-            ("<%= 7*7 %>", "49", "<%= 13*37 %>", "481"),
+            ("{{7*191}}", "1337", "{{11*173}}", "1903"),
+            ("${7*191}", "1337", "${11*173}", "1903"),
+            ("#{7*191}", "1337", "#{11*173}", "1903"),
+            ("<%= 7*191 %>", "1337", "<%= 11*173 %>", "1903"),
             ("{{7*'7'}}", "7777777", "{{6*'6'}}", "666666"),
-            ("${{7*7}}", "49", "${{13*37}}", "481"),
+            ("${{7*191}}", "1337", "${{11*173}}", "1903"),
         ]
 
         # Baseline: fetch the page with a clearly benign value to record static content.
@@ -222,7 +239,7 @@ class AdvancedInjectionModule(BaseModule):
             if not confirm_res or confirm_expected not in confirm_res.text:
                 continue
 
-            self.add_finding(Finding(
+            finding = Finding(
                 id="SSTI-001",
                 name="Server-Side Template Injection (SSTI)",
                 category="Server-Side Template Injection",
@@ -236,15 +253,34 @@ class AdvancedInjectionModule(BaseModule):
                 impact="Attacker can execute arbitrary code on the server, leading to full system compromise.",
                 remediation="Avoid passing user input directly to template engines. Use sandboxed templates.",
                 cwe="CWE-94"
-            ))
+            )
+            self._attach_proof(finding, url, param, method, payload, base_data, expected)
+            self.add_finding(finding)
             return
 
     def _send(self, url, param, method, payload, base_data=None):
         """Helper to send requests"""
         if method == "GET":
-            target_url = mutate_query(url, param, payload)
+            target_url = mutate_query(url, param, payload, base_data)
             return self.scanner._request("GET", target_url)
         else:  # POST
             data = dict(base_data) if base_data else {}
             data[param] = payload
             return self.scanner._request("POST", url, data=data)
+
+    def _attach_proof(self, finding, url, param, method, payload, base_data, marker):
+        """Attach replayable proof mirroring the exact request that fired.
+
+        GET → the mutated query URL as proof_url, empty proof_data.
+        POST → the action URL as proof_url, urlencoded body as proof_data.
+        Same pattern as sqli.py / xss.py so --retest can re-fire it.
+        """
+        from urllib.parse import urlencode
+        if method == "GET":
+            proof_url, proof_data = mutate_query(url, param, payload, base_data), ""
+        else:
+            data = dict(base_data) if base_data else {}
+            data[param] = payload
+            proof_url, proof_data = url, urlencode(data)
+        return self.attach_proof(finding, method=method, url=proof_url,
+                                 marker=marker, data=proof_data)

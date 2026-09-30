@@ -152,6 +152,21 @@ class VulnerableHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if parsed.path == "/echo-form":
+            self._html(
+                """
+                <form method="GET" action="/echo">
+                  <input name="q">
+                </form>
+                """
+            )
+            return
+
+        if parsed.path == "/echo":
+            # Pure reflection: echoes the value verbatim, never evaluates it.
+            self._html(params.get("q", [""])[0])
+            return
+
         self.send_error(404)
 
     def do_POST(self) -> None:
@@ -231,8 +246,23 @@ class ScannerCoverageTest(unittest.TestCase):
         self.assertGreaterEqual(sum(f.severity == MEDIUM for f in result.findings), 1)
 
     def test_reflected_marker_does_not_trigger_command_injection(self) -> None:
-        result = WebScanner(f"{self.base_url}search-form", depth=0, max_pages=4, timeout=3).scan()
+        # /echo reflects verbatim without evaluating: the "1337" marker never
+        # appears, so mere reflection must not raise a Command Injection finding.
+        result = WebScanner(f"{self.base_url}echo-form", depth=0, max_pages=4, timeout=3).scan()
         self.assertFalse(
+            any(
+                finding.category == "Command Injection" and finding.parameter == "q"
+                for finding in result.findings
+            ),
+            result.findings,
+        )
+
+    def test_get_form_payloads_reach_command_injection(self) -> None:
+        # Regression test: GET-form payloads must actually be sent (mutate_query
+        # used to silently drop them). /search evaluates the echo payload, so
+        # the Command Injection finding must now appear via the form.
+        result = WebScanner(f"{self.base_url}search-form", depth=0, max_pages=4, timeout=3).scan()
+        self.assertTrue(
             any(
                 finding.category == "Command Injection" and finding.parameter == "q"
                 for finding in result.findings

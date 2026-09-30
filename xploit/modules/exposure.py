@@ -24,9 +24,6 @@ class ExposureModule(BaseModule):
         re.compile(r"(?i)sk_live_[0-9a-zA-Z]{24}"), # Stripe Secret Key
         re.compile(r"(?i)access_token\$production\$[0-9a-z]{16}\$[0-9a-f]{32}"), # PayPal Token
     )
-    IDOR_URL_PATTERNS = (
-        re.compile(r"(?i)(?:^|[?&])(id|user|user_id|account|account_id|order|order_id|profile|uid|guid|uuid)=([0-9a-fA-F-]{8,}|[0-9]+)"),
-    )
     IDOR_FIELD_NAMES = {"id", "uid", "user_id", "account_id", "order_id", "profile_id", "guid", "uuid", "key", "handle"}
     SENSITIVE_FILES = {
         "/.env": (r"(?i)(DB_|DATABASE_URL|APP_KEY|SECRET|API[_-]?KEY|PASSWORD|TOKEN)", "Environment File Exposure"),
@@ -62,8 +59,10 @@ class ExposureModule(BaseModule):
     def run(self) -> None:
         self._check_observed_directory_listing()
         self._check_html_comment_disclosure()
-        self._check_idor_indicators()
         if self.scanner.mode != PASSIVE:
+            # IDOR checks fire live probe requests (original ID, then ±1, ±2),
+            # so they must never run in passive mode.
+            self._check_idor_indicators()
             self._check_sensitive_files()
             self._check_debug_endpoints()
 
@@ -206,13 +205,36 @@ class ExposureModule(BaseModule):
     def _fetch(self, url: str, param: str, value: str, method: str, base_data) -> object:
         if method == "GET":
             parsed = urlparse(url)
-            pairs = [(k, value if k == param else v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)]
-            new_url = urlunparse(parsed._replace(query=urlencode(pairs)))
+            # Merge form inputs into the query: a GET form's action URL often
+            # carries no query string, so probing the bare action URL was a
+            # silent no-op. Existing query pairs are kept, form inputs overlaid,
+            # probed param set to the test value.
+            merged = dict(parse_qsl(parsed.query, keep_blank_values=True))
+            if base_data:
+                merged.update({k: str(v) for k, v in base_data.items()})
+            merged[param] = value
+            new_url = urlunparse(parsed._replace(query=urlencode(list(merged.items()))))
             return self.scanner._request("GET", new_url)
         else:
             data = dict(base_data) if base_data else {}
             data[param] = value
             return self.scanner._request("POST", url, data=data)
+
+    def _probe_file(self, target: str):
+        """GET a sensitive-file/debug probe, following a single in-scope 30x.
+
+        Probes use allow_redirects=False (so redirect chains and off-origin
+        hops are never blindly followed), but a lone 301/302 — e.g. a server
+        canonicalizing /.env — must not skip the content check entirely.
+        """
+        response = self.scanner._request("GET", target, allow_redirects=False)
+        if response is not None and response.status_code in (301, 302, 303, 307, 308):
+            location = response.headers.get("Location") or ""
+            if location:
+                redir = urljoin(target, location)
+                if redir != target and self.scanner._in_scope(redir):
+                    response = self.scanner._request("GET", redir, allow_redirects=False)
+        return response
 
     def _check_sensitive_files(self) -> None:
         # Get a baseline for a known non-existent file to detect "soft 404" behavior
@@ -225,7 +247,7 @@ class ExposureModule(BaseModule):
             target = self._root_url(path)
             if not self.scanner._in_scope(target):
                 continue
-            response = self.scanner._request("GET", target, allow_redirects=False)
+            response = self._probe_file(target)
             if not response or response.status_code != 200:
                 continue
 
@@ -260,7 +282,7 @@ class ExposureModule(BaseModule):
             target = self._root_url(path)
             if not self.scanner._in_scope(target):
                 continue
-            response = self.scanner._request("GET", target, allow_redirects=False)
+            response = self._probe_file(target)
             if not response or response.status_code != 200:
                 continue
 

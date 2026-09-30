@@ -1,10 +1,43 @@
 from __future__ import annotations
 
 import json
+import re
 import textwrap
 from pathlib import Path
 
 from .scanner import Finding, ScanResult, summarize_findings
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def strip_ansi(text: str) -> str:
+    """Remove ANSI color codes — file output must be plain text."""
+    return _ANSI_RE.sub("", text)
+
+
+# Any ANSI/VT100 escape sequence (broader than the SGR-only _ANSI_RE above):
+# OSC ... BEL/ST, CSI ... final byte, charset designations, other Fe escapes.
+_ESCAPE_RE = re.compile(
+    r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"
+    r"|\x1b\[[0-?]*[ -/]*[@-~]"
+    r"|\x1b[()#][0-9A-Z]"
+    r"|\x1b[@-Z\\-_]"
+)
+# C0 control characters and DEL — ESC (\x1b) is in this range, so any escape
+# the sequence regex above misses is still neutralized (possibly leaving a
+# harmless printable remnant like "[31m", never an active escape).
+_C0_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def sanitize_terminal(text: str) -> str:
+    """Strip ANSI escape sequences and C0 control characters from
+    server-controlled text before it is interpolated into terminal output —
+    a malicious target could otherwise inject terminal escapes via reflected
+    payloads in finding fields. Keeps \\n and \\t so multi-line evidence
+    still renders readably."""
+    if not text:
+        return ""
+    return _C0_RE.sub("", _ESCAPE_RE.sub("", text))
 
 
 def render_text_report(result: ScanResult) -> str:
@@ -47,9 +80,9 @@ def render_text_report(result: ScanResult) -> str:
 
     lines.append("")
     lines.append(f"┌{'─' * box_w}┐")
-    lines.append(f"│  {BOLD}{target:<{box_w - 3}}{RESET}│")
-    lines.append(f"│  {DIM}{meta:<{box_w - 3}}{RESET}│")
-    lines.append(f"│  {DIM}{coverage:<{box_w - 3}}{RESET}│")
+    lines.append(f"│  {BOLD}{target:<{box_w - 2}}{RESET}│")
+    lines.append(f"│  {DIM}{meta:<{box_w - 2}}{RESET}│")
+    lines.append(f"│  {DIM}{coverage:<{box_w - 2}}{RESET}│")
     lines.append(f"└{'─' * box_w}┘")
     lines.append("")
 
@@ -92,16 +125,26 @@ def render_text_report(result: ScanResult) -> str:
             lines.append("")
 
         col     = SEV_COLOR.get(finding.severity, "")
-        cwe_str = f"  {DIM}{finding.cwe}{RESET}" if finding.cwe else ""
-        lines.append(f"  {BOLD}{idx:>2}{RESET}  {BOLD}{finding.name}{RESET}{cwe_str}")
+        cwe_str = f"  {DIM}{sanitize_terminal(finding.cwe)}{RESET}" if finding.cwe else ""
+        lines.append(f"  {BOLD}{idx:>2}{RESET}  {BOLD}{sanitize_terminal(finding.name)}{RESET}{cwe_str}")
+
+        note = sanitize_terminal(finding.verification_note)
+        verified_str = (
+            "yes — replayable proof attached"
+            if finding.verified
+            else (f"no — {note}" if note else "no")
+        )
+        retest_str = sanitize_terminal(finding.retest_status) if finding.retest_status != "not_run" else ""
 
         for line in filter(None, [
-            _field("url",    finding.url),
-            _field("param",  finding.parameter),
-            _field("method", finding.method if finding.method != "GET" else ""),
-            _field("found",  finding.evidence),
-            _field("impact", finding.impact),
-            _field("fix",    finding.remediation),
+            _field("url",    sanitize_terminal(finding.url)),
+            _field("param",  sanitize_terminal(finding.parameter)),
+            _field("method", sanitize_terminal(finding.method) if finding.method != "GET" else ""),
+            _field("found",  sanitize_terminal(finding.evidence)),
+            _field("verify", verified_str),
+            _field("retest", retest_str),
+            _field("impact", sanitize_terminal(finding.impact)),
+            _field("fix",    sanitize_terminal(finding.remediation)),
         ]):
             lines.append(line)
 
@@ -124,29 +167,3 @@ def write_report(content: str, output_path: str) -> None:
 def _finding_sort_key(finding: Finding) -> tuple[int, str]:
     order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
     return order.get(finding.severity, 9), finding.category
-
-
-def _render_finding_lines(index: int, finding: Finding) -> list[str]:
-    lines = [
-        f"[{index:02d}] {finding.severity} {finding.name}",
-        f"     Finding ID     : {finding.id}",
-        f"     Category       : {finding.category}",
-        f"     Severity       : {finding.severity}",
-        f"     Confidence     : {finding.confidence}",
-        f"     Affected URL   : {finding.url}",
-        f"     HTTP Method    : {finding.method}",
-    ]
-    if finding.parameter:
-        lines.append(f"     Parameter      : {finding.parameter}")
-    if finding.trigger:
-        lines.append(f"     Detected By    : {finding.trigger}")
-    if finding.cwe:
-        lines.append(f"     CWE            : {finding.cwe}")
-    lines.extend(
-        [
-            f"     Evidence       : {finding.evidence}",
-            f"     Security Impact: {finding.impact}",
-            f"     Remediation    : {finding.remediation}",
-        ]
-    )
-    return lines

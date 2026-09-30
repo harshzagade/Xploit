@@ -1,6 +1,12 @@
 from __future__ import annotations
+import re
 from .base import BaseModule
 from ..scanner import Finding, HIGH, INFO
+
+USERNAME_TOKENS = {"user", "username", "email", "login", "userid", "account", "uname"}
+
+def _field_tokens(name: str) -> set:
+    return set(re.split(r"[_\-\s]+", name.lower()))
 
 class BruteForceModule(BaseModule):
     """Comprehensive default credential and weak password testing"""
@@ -111,14 +117,38 @@ class BruteForceModule(BaseModule):
             if not has_password:
                 continue
 
-            has_username = any(
-                any(x in name.lower() for x in ['user', 'email', 'login', 'name', 'username'])
-                for name in form.inputs.keys()
-            )
+            field_names = [n.lower() for n in form.inputs.keys()]
+            action_lower = form.action.lower()
 
-            if has_username:
-                action_lower = form.action.lower()
-                is_login_action = any(x in action_lower for x in ['login', 'signin', 'auth', 'authenticate'])
+            # Registration/signup forms are NOT login forms. Stuffing ~200
+            # credential pairs at a signup endpoint creates junk accounts and,
+            # combined with welcome-redirects, false HIGH findings.
+            if any(h in n for n in field_names for h in ("confirm", "repeat", "verify")):
+                continue
+            if any(x in action_lower for x in ("register", "signup", "sign-up", "join")):
+                continue
+
+            def _tokens(name):
+                return _field_tokens(name)
+
+            username_tokens = USERNAME_TOKENS
+            personal_name_tokens = {"firstname", "first_name", "lastname", "last_name",
+                                    "fullname", "full_name", "name"}
+
+            username_fields = {n for n in field_names if _tokens(n) & username_tokens}
+            # A personal-name field alongside (email+password, no login action)
+            # is a registration/profile form, not a login form. Note bare
+            # "name" no longer counts as a username — substring-matching it was
+            # the misclassification trigger.
+            personal_name_fields = {
+                n for n in field_names
+                if n not in username_fields and _tokens(n) & personal_name_tokens
+            }
+            is_login_action = any(x in action_lower for x in ['login', 'signin', 'auth', 'authenticate'])
+            if personal_name_fields and not is_login_action:
+                continue
+
+            if username_fields:
                 if is_login_action:
                     login_forms.insert(0, form)
                 else:
@@ -131,9 +161,10 @@ class BruteForceModule(BaseModule):
         username_field = None
         password_field = None
 
-        # Break after first match — avoid overwriting with the last matching field
+        # Break after first match — avoid overwriting with the last matching field.
+        # Token-based (not substring) so fields like "displayname" don't win.
         for name in form.inputs.keys():
-            if any(x in name.lower() for x in ['user', 'email', 'login', 'name', 'username']):
+            if _field_tokens(name) & USERNAME_TOKENS:
                 username_field = name
                 break
 
@@ -241,11 +272,12 @@ class BruteForceModule(BaseModule):
 
         response_text = response.text.lower()
         baseline_text = baseline.text.lower() if baseline else ""
-        baseline_len = len(baseline.text) if baseline else 0
 
-        # Failure phrases — checked before redirect so a redirect to /error isn't a false positive
+        # Failure phrases — checked before redirect so a redirect to /error isn't a false positive.
+        # Note: bare "error" is deliberately NOT in this list — it appears in
+        # benign pages ("0 errors", error-handling JS) and suppressed real logins.
         failure_indicators = [
-            "invalid", "incorrect", "failed", "error",
+            "invalid", "incorrect", "failed",
             "wrong", "denied", "unauthorized", "forbidden",
             "bad credentials", "authentication failed",
             "try again", "password is incorrect", "invalid password",
@@ -254,11 +286,20 @@ class BruteForceModule(BaseModule):
         if any(ind in response_text for ind in failure_indicators):
             return False
 
-        # Redirect to a non-login URL after passing failure check = success
+        # Redirect to a non-login URL after passing failure check = success —
+        # but ONLY if the redirect target differs from the baseline's. Failed
+        # logins often bounce to "/" or "/home" too, which previously produced
+        # false HIGH "Default Credentials Accepted" findings.
         if response.status_code in [301, 302, 303, 307, 308]:
-            redirect_location = response.headers.get('Location', '').lower()
-            if not any(x in redirect_location for x in ['login', 'signin', 'auth']):
+            redirect_location = (response.headers.get('Location') or '').lower()
+            baseline_location = ''
+            if baseline is not None and baseline.status_code in [301, 302, 303, 307, 308]:
+                baseline_location = (baseline.headers.get('Location') or '').lower()
+            if redirect_location and redirect_location == baseline_location:
+                return False
+            if redirect_location and not any(x in redirect_location for x in ['login', 'signin', 'auth']):
                 return True
+            return False
 
         # Only count success phrases that were NOT already on the login page baseline.
         success_indicators = [
@@ -272,10 +313,6 @@ class BruteForceModule(BaseModule):
             for ind in success_indicators
         )
         if new_success:
-            return True
-
-        # Large response growth (2× baseline) with no failure = likely dashboard loaded.
-        if baseline_len > 0 and len(response.text) > baseline_len * 2:
             return True
 
         return False

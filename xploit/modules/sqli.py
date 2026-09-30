@@ -15,7 +15,9 @@ class SQLInjectionModule(BaseModule):
 
     def _check_url(self, url):
         from urllib.parse import parse_qsl
-        params = list(dict(parse_qsl(urlparse(url).query, keep_blank_values=True)).keys())
+        # Iterate raw pairs (not dict(...).keys()): duplicate parameters
+        # (?id=1&id=2) must not be silently collapsed away.
+        params = [key for key, _ in parse_qsl(urlparse(url).query, keep_blank_values=True)]
         for param in params:
             if self._test_error_based(url, param, "GET"): continue
             if self._test_union_based(url, param, "GET"): continue
@@ -40,7 +42,10 @@ class SQLInjectionModule(BaseModule):
             "\" OR \"a\"=\"a",
             "') OR ('a'='a",
         ]
-        baseline = self.scanner.pages.get(url)
+        # Fresh baseline probe (not the stale crawl-time page): form actions
+        # often aren't in pages at all, and an empty baseline made ANY error
+        # string after malformed input a HIGH SQLi.
+        baseline = self._send_payload(url, param, method, "sqli_baseline_xploit", base_data)
         baseline_text = baseline.text.lower() if baseline else ""
 
         for payload in payloads:
@@ -50,12 +55,16 @@ class SQLInjectionModule(BaseModule):
             res_text = res.text.lower()
             for error in SQL_ERRORS:
                 if error in res_text and error not in baseline_text:
-                    self._report(url, param, method, payload, f"New SQL error message appeared in response: {error}")
+                    self._report(url, param, method, payload,
+                                 f"New SQL error message appeared in response: {error}",
+                                 base_data, marker=error)
                     return True
 
     def _send_payload(self, url, param, method, payload, base_data=None):
         if method == "GET":
-            return self.scanner._request("GET", mutate_query(url, param, payload))
+            # Pass sibling form fields so GET forms (action URL with no query
+            # string) actually send the payload instead of dropping it.
+            return self.scanner._request("GET", mutate_query(url, param, payload, base_data))
         else:
             data = dict(base_data) if base_data else {}
             data[param] = payload
@@ -79,10 +88,11 @@ class SQLInjectionModule(BaseModule):
             if not res:
                 continue
             res_lower = res.text.lower()
-            new_sql_error = any(e in res_lower and e not in baseline_text for e in SQL_ERRORS)
-            if new_sql_error:
+            matched = next((e for e in SQL_ERRORS if e in res_lower and e not in baseline_text), "")
+            if matched:
                 self._report(url, param, method, payload,
-                             "Union-based SQLi: SQL error appeared in response to UNION payload")
+                             "Union-based SQLi: SQL error appeared in response to UNION payload",
+                             base_data, marker=matched)
                 return True
 
     def _test_boolean_based(self, url, param, method, base_data=None):
@@ -99,11 +109,14 @@ class SQLInjectionModule(BaseModule):
                 continue
             true_len  = len(true_res.text)
             false_len = len(false_res.text)
-            true_near_baseline = baseline_len > 0 and abs(true_len - baseline_len) < 150
+            # Empty-body endpoints have a zero baseline — still a valid
+            # comparison, so no baseline_len > 0 gate here.
+            true_near_baseline = abs(true_len - baseline_len) < 150
             significant_diff   = abs(true_len - false_len) > 200
             if true_near_baseline and significant_diff:
                 self._report(url, param, method, true_p,
-                             f"Boolean-based blind SQLi: TRUE({true_len}B) vs FALSE({false_len}B) — {abs(true_len - false_len)}B delta")
+                             f"Boolean-based blind SQLi: TRUE({true_len}B) vs FALSE({false_len}B) — {abs(true_len - false_len)}B delta",
+                             base_data, marker="")
                 return True
 
     def _test_stacked_queries(self, url, param, method, base_data=None):
@@ -111,7 +124,7 @@ class SQLInjectionModule(BaseModule):
             "'; EXEC sp_MSforeachtable 'SELECT 1'--",
             "1; SELECT COUNT(*) FROM information_schema.tables--",
         ]
-        baseline = self.scanner.pages.get(url)
+        baseline = self._send_payload(url, param, method, "sqli_baseline_xploit", base_data)
         baseline_text = baseline.text.lower() if baseline else ""
 
         for payload in payloads:
@@ -120,12 +133,15 @@ class SQLInjectionModule(BaseModule):
                 continue
             indicators = ["multiple statements", "syntax near", "expects parameter"]
             text_lower = res.text.lower()
-            if any(ind in text_lower and ind not in baseline_text for ind in indicators):
+            matched = next((ind for ind in indicators if ind in text_lower and ind not in baseline_text), "")
+            if matched:
                 self._report(url, param, method, payload,
-                             "Stacked queries SQLi: Error response suggests multiple statement support")
+                             "Stacked queries SQLi: Error response suggests multiple statement support",
+                             base_data, marker=matched)
                 return True
 
-    def _report(self, url, param, method, payload, evidence):
+    def _report(self, url, param, method, payload, evidence, base_data=None, marker=""):
+        from urllib.parse import urlencode
         ev_lower = evidence.lower()
         if "union" in ev_lower:
             sqli_type, finding_id = "Union-based SQL Injection", "SQLI-003"
@@ -136,7 +152,7 @@ class SQLInjectionModule(BaseModule):
         else:
             sqli_type, finding_id = "SQL Injection", "SQLI-001"
 
-        self.add_finding(Finding(
+        finding = Finding(
             id=finding_id,
             name=sqli_type,
             category="SQL Injection",
@@ -150,4 +166,14 @@ class SQLInjectionModule(BaseModule):
             impact="If confirmed, SQL injection allows attackers to read, modify, or delete database records — leading to authentication bypass, data theft, or full system compromise.",
             remediation="Use parameterized queries, prepared statements, and input validation. Never concatenate user input into SQL queries.",
             cwe="CWE-89"
-        ))
+        )
+        # Replayable proof: the exact request that triggered the finding, so the
+        # evidence gate can verify it and --retest can re-fire it.
+        if method == "GET":
+            proof_url, proof_data = mutate_query(url, param, payload, base_data), ""
+        else:
+            data = dict(base_data) if base_data else {}
+            data[param] = payload
+            proof_url, proof_data = url, urlencode(data)
+        self.attach_proof(finding, method=method, url=proof_url, marker=marker, data=proof_data)
+        self.add_finding(finding)

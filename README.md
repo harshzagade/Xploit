@@ -1,7 +1,7 @@
 # Xploit
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-1.7.0-blue.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Version-1.6.0-blue.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow.svg?style=flat-square">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Detections-25%2B-brightgreen.svg?style=flat-square">
@@ -33,6 +33,13 @@
   - CWE classifications for all vulnerabilities
   - Evidence, impact assessment, and remediation guidance
   - Text and JSON output formats
+  - `--output PATH` saves the report to a file (ANSI colors stripped)
+
+- **Evidence-Gated Findings**
+  - Every finding passes a provenance gate: `verified` only with replayable proof
+  - Injection findings (SQLi, XSS) carry the exact proof request + response marker
+  - `--retest` re-fires each proof to confirm the finding still reproduces
+    (`confirmed` / `fixed` / `unverifiable`; refused in passive mode)
 
 - **Advanced Scanning Controls**
   - Three scan modes: `passive`, `active`, `full`
@@ -105,6 +112,16 @@ xploit https://target.example \
   --scope-prefix /app
 ```
 
+### Retest Findings (Confirm They Still Reproduce)
+```bash
+xploit https://target.example --mode active --retest
+```
+
+### Save Report to File
+```bash
+xploit https://target.example --format json --output report.json --quiet
+```
+
 ---
 
 ## 📖 Usage Examples
@@ -138,7 +155,7 @@ python3 vulnerable_test_app.py
 xploit http://127.0.0.1:5000/ --mode full
 ```
 
-**Expected Results:** 18 findings including SQL Injection and XSS
+**Expected Results:** 11 findings — 5 HIGH, 4 MEDIUM, 1 LOW, 1 INFO — including SQL Injection and XSS
 
 See [HOW_TO_TEST.md](./HOW_TO_TEST.md) for detailed testing instructions.
 
@@ -155,9 +172,9 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 
 | Category | Vulnerabilities | Detection Method |
 |----------|----------------|------------------|
-| **Injection** | SQL Injection (Error, Time, Union, Boolean, Stacked) | 5 SQLi techniques + response analysis |
+| **Injection** | SQL Injection (Error, Union, Boolean, Stacked) | 4 SQLi techniques + response analysis |
 | | Cross-Site Scripting (XSS) | 20 payload variations + reflection check |
-| | Command Injection | Time-delay and output-based detection |
+| | Command Injection | Output-based detection |
 | | Directory Traversal | Path traversal payloads |
 | | **LDAP Injection** | Error-based detection with LDAP payloads |
 | | **XML Injection / XXE** | External entity payloads + file disclosure |

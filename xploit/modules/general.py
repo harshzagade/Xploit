@@ -1,6 +1,6 @@
 from __future__ import annotations
 from .base import BaseModule
-from ..scanner import Finding, HIGH, MEDIUM, LOW, INFO, PASSIVE
+from ..scanner import Finding, HIGH, MEDIUM, LOW, INFO, PASSIVE, normalize_path
 
 class GeneralModule(BaseModule):
     name = "General Security"
@@ -74,12 +74,19 @@ class GeneralModule(BaseModule):
                 # Extract cookie name
                 name_part = cookie_str.split(";")[0]
                 cookie_name = name_part.split("=")[0].strip()
-                flags = cookie_str.lower()
+                # Check flags only in the attribute segments (after the first
+                # name=value pair), so a cookie VALUE containing e.g.
+                # 'secure_mode' can't fake the presence of a flag.
+                attr_names = {
+                    seg.strip().split("=")[0].lower()
+                    for seg in cookie_str.split(";")[1:]
+                    if seg.strip()
+                }
 
                 is_session_like = bool(session_pattern.search(cookie_name))
 
                 # HttpOnly missing
-                if "httponly" not in flags and cookie_name not in seen_cookie_names:
+                if "httponly" not in attr_names and cookie_name not in seen_cookie_names:
                     seen_cookie_names.add(cookie_name)
                     self.add_finding(Finding(
                         id="COOK-001",
@@ -96,7 +103,7 @@ class GeneralModule(BaseModule):
                     ))
 
                 # Secure flag missing on HTTPS site
-                if url.startswith("https://") and "secure" not in flags and f"{cookie_name}_secure" not in seen_cookie_names:
+                if url.startswith("https://") and "secure" not in attr_names and f"{cookie_name}_secure" not in seen_cookie_names:
                     seen_cookie_names.add(f"{cookie_name}_secure")
                     self.add_finding(Finding(
                         id="COOK-002",
@@ -113,7 +120,7 @@ class GeneralModule(BaseModule):
                     ))
 
                 # SameSite missing
-                if "samesite" not in flags and f"{cookie_name}_samesite" not in seen_cookie_names:
+                if "samesite" not in attr_names and f"{cookie_name}_samesite" not in seen_cookie_names:
                     seen_cookie_names.add(f"{cookie_name}_samesite")
                     self.add_finding(Finding(
                         id="COOK-003",
@@ -201,16 +208,41 @@ class GeneralModule(BaseModule):
 
     def _check_cors(self):
         origin = "https://evil.example"
+        # One probe per path shape — the crawler stores /item?id=1 and
+        # /item?id=2 as separate pages, but CORS policy is per endpoint.
+        seen_shapes: set[str] = set()
         for url in self.scanner.pages:
+            shape = normalize_path(url)
+            if shape in seen_shapes:
+                continue
+            seen_shapes.add(shape)
             res = self.scanner._request("GET", url, headers={"Origin": origin})
             if not res: continue
             acao = res.headers.get("Access-Control-Allow-Origin")
-            if acao == "*" or acao == origin:
-                self.add_finding(Finding(
-                    id="CORS-001", name="Permissive CORS Policy",
-                    category="CORS Misconfiguration", severity=MEDIUM, confidence="High",
-                    url=url, evidence=f"ACAO header is {acao}",
-                    impact="Any origin can read cross-origin responses when the browser accepts the policy, which broadens data exposure.", 
-                    remediation="Restrict Origin allowlist.", cwe="CWE-942"
-                ))
-                break
+            if not acao:
+                continue
+            allow_creds = res.headers.get("Access-Control-Allow-Credentials", "").strip().lower() == "true"
+            reflected = acao == origin
+            if reflected and allow_creds:
+                # Worst case: attacker origin whitelisted WITH credentials.
+                severity, confidence = HIGH, "High"
+                evidence = f"Origin {origin} reflected with Access-Control-Allow-Credentials: true"
+                impact = "Any site can make credentialed cross-origin requests and read the responses, exposing session data to attackers."
+            elif acao == "*":
+                # Bare wildcard without credentials: readable cross-origin but
+                # not with cookies — LOW, not MEDIUM.
+                severity, confidence = LOW, "Medium"
+                evidence = "Access-Control-Allow-Origin: *" + (" (with Allow-Credentials: true, which browsers ignore for '*')" if allow_creds else "")
+                impact = "Any origin can read non-credentialed cross-origin responses, which broadens data exposure for public endpoints."
+            elif reflected:
+                severity, confidence = MEDIUM, "Medium"
+                evidence = f"Origin {origin} reflected without Access-Control-Allow-Credentials"
+                impact = "Any origin is reflected, so non-credentialed cross-origin reads are permitted from attacker sites."
+            else:
+                continue
+            self.add_finding(Finding(
+                id="CORS-001", name="Permissive CORS Policy",
+                category="CORS Misconfiguration", severity=severity, confidence=confidence,
+                url=url, evidence=evidence, impact=impact,
+                remediation="Restrict Origin allowlist.", cwe="CWE-942"
+            ))
