@@ -503,6 +503,11 @@ class WebScanner:
 
                 for future in done:
                     url, depth = futures.pop(future)
+                    # Re-check the cap per completed future: wait() returns
+                    # every future finished so far, so a whole batch can land
+                    # at once and overshoot max_pages without this guard.
+                    if len(self.pages) >= self.max_pages:
+                        break
                     res = future.result()
                     # NB: `Response.__bool__` is `.ok`, so `if not res` would
                     # silently discard every 4xx/5xx page (forms/links lost).
@@ -536,6 +541,14 @@ class WebScanner:
                                     seen.add(link)
                                     self._normalized_seen.add(norm)
                                     futures[executor.submit(self._request, "GET", link)] = (link, depth + 1)
+
+                # Cap reached mid-batch: stop feeding the crawl and cancel
+                # anything still in flight — the executor would otherwise
+                # wait for (and the target would receive) pointless requests.
+                if len(self.pages) >= self.max_pages:
+                    for f in futures:
+                        f.cancel()
+                    break
 
         if self.on_progress:
             self.on_progress(1, 1, "Crawl complete")

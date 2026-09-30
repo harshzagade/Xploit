@@ -123,6 +123,15 @@ class BugfixRegression2Test(unittest.TestCase):
         scanner.scan()
         self.assertLessEqual(len(scanner.pages), 2)
 
+    def test_max_pages_cap_holds_across_repeated_crawls(self) -> None:
+        # The cap was racy: wait() returns every finished future at once, so a
+        # batch of completions could overshoot max_pages before the while-loop
+        # re-checked it. Hammer it so a regression flakes loudly.
+        for _ in range(5):
+            scanner = WebScanner(self.base_url, depth=2, max_pages=2, timeout=3)
+            scanner.scan()
+            self.assertLessEqual(len(scanner.pages), 2)
+
     def test_in_scope_rejects_off_origin(self) -> None:
         scanner = WebScanner(self.base_url, timeout=2)
         self.assertFalse(scanner._in_scope("http://evil.example/"))
