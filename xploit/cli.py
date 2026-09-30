@@ -194,7 +194,7 @@ def run_scan(args: argparse.Namespace) -> int:
         content = render_json_report(result)
     else:
         from .reporting import render_text_report
-        content = render_text_report(result)
+        content = render_text_report(result, colors=colors)
 
     if args.output:
         from .reporting import strip_ansi, write_report

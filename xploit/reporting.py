@@ -40,14 +40,14 @@ def sanitize_terminal(text: str) -> str:
     return _C0_RE.sub("", _ESCAPE_RE.sub("", text))
 
 
-def render_text_report(result: ScanResult) -> str:
-    BOLD   = "\033[1m"
-    RESET  = "\033[0m"
-    DIM    = "\033[2m"
-    RED    = "\033[91m"
-    YELLOW = "\033[93m"
-    CYAN   = "\033[96m"
-    GREEN  = "\033[92m"
+def render_text_report(result: ScanResult, colors: bool = True) -> str:
+    BOLD   = "\033[1m"  if colors else ""
+    RESET  = "\033[0m"  if colors else ""
+    DIM    = "\033[2m"  if colors else ""
+    RED    = "\033[91m" if colors else ""
+    YELLOW = "\033[93m" if colors else ""
+    CYAN   = "\033[96m" if colors else ""
+    GREEN  = "\033[92m" if colors else ""
     SEV_COLOR = {"HIGH": RED, "MEDIUM": YELLOW, "LOW": CYAN, "INFO": DIM}
 
     LABEL_W  = 8   # width of field label column ("found   ", "impact  ", etc.)
