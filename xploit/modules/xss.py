@@ -11,6 +11,7 @@ class XSSModule(BaseModule):
     def run(self):
         # _confirmed tracks (base_url, param) pairs already reported so we emit
         # one finding per vulnerable parameter, not one per payload variant.
+        # Stored-XSS confirmations use (base_url, param, "stored") keys.
         self._confirmed: set[tuple[str, str]] = set()
 
         payloads = [
@@ -59,8 +60,11 @@ class XSSModule(BaseModule):
             target_url = mutate_query(url, param, payload)
             res = self.scanner._request("GET", target_url)
             if res:
-                self._analyze_reflection(res, base, param, payload, "GET",
-                                         proof_url=target_url)
+                if self._analyze_reflection(res, base, param, payload, "GET",
+                                             proof_url=target_url):
+                    # Reflected: probe whether the payload was stored.
+                    benign_url = mutate_query(url, param, "xploit_benign_recheck")
+                    self._check_persistence(benign_url, base, param, payload)
 
     def _check_form(self, form, payload):
         base = self._base_url(form.action)
@@ -79,8 +83,18 @@ class XSSModule(BaseModule):
                 res = self.scanner._request("POST", form.action, data=data)
                 proof_data = urlencode(data)
             if res:
-                self._analyze_reflection(res, base, param, payload, form.method,
-                                         proof_url=proof_url, proof_data=proof_data)
+                if self._analyze_reflection(res, base, param, payload, form.method,
+                                            proof_url=proof_url, proof_data=proof_data):
+                    # Reflected: probe whether the payload was stored. The
+                    # persistence re-request always uses a benign value.
+                    if form.method == "GET":
+                        benign_data = dict(form.inputs)
+                        benign_data[param] = "xploit_benign_recheck"
+                        sep = "&" if urlparse(form.action).query else "?"
+                        benign_url = form.action + sep + urlencode(benign_data)
+                    else:
+                        benign_url = form.action
+                    self._check_persistence(benign_url, base, param, payload)
 
     @staticmethod
     def _executable_context(before: str, payload: str = "") -> tuple[bool, str]:
@@ -126,27 +140,42 @@ class XSSModule(BaseModule):
             return False, "inside inert attribute value"
         return True, "HTML element body"
 
-    def _analyze_reflection(self, response, base_url, parameter, payload, method,
-                            proof_url, proof_data=""):
+    def _reflection_point(self, response, payload):
+        """Return the context description if the payload reflects into a
+        statically executable context, else None.
+
+        Shared by the reflected check and the stored-XSS persistence probe so
+        both apply the same executability bar.
+        """
         # Missing Content-Type is scannable (browsers sniff it); only skip when
         # the server explicitly declares a non-HTML type.
         content_type = response.headers.get("Content-Type", "")
         if content_type and "text/html" not in content_type.lower():
-            return
+            return None
         if payload not in response.text:
-            return
+            return None
 
         idx = response.text.find(payload)
         before = response.text[max(0, idx - 500):idx]
         executable, context_desc = self._executable_context(before, payload)
         if not executable:
-            return
+            return None
         # The payload itself must carry an active vector — reflection of a
         # benign string into an executable context is not XSS.
         if not any(p in payload.lower() for p in ["<svg", "<img", "<script", "onerror",
                                                   "onload", "ontoggle", "onmouseover",
                                                   "onstart", "javascript:"]):
-            return
+            return None
+        return context_desc
+
+    def _analyze_reflection(self, response, base_url, parameter, payload, method,
+                            proof_url, proof_data=""):
+        """Report reflected XSS when the payload lands in an executable
+        context. Returns True when confirmed (so callers can probe for
+        persistence)."""
+        context_desc = self._reflection_point(response, payload)
+        if context_desc is None:
+            return False
 
         self._confirmed.add((base_url, parameter))
         finding = Finding(
@@ -170,4 +199,46 @@ class XSSModule(BaseModule):
         # proof request and finding the payload again confirms the finding.
         self.attach_proof(finding, method=method, url=proof_url,
                           marker=payload, data=proof_data)
+        self.add_finding(finding)
+        return True
+
+    def _check_persistence(self, benign_url, base_url, parameter, payload):
+        """Stored-XSS probe: after a reflected hit, re-request with a benign
+        value. If OUR payload is still served, it was stored server-side —
+        a strictly stronger finding than reflected XSS. Read-only: the probe
+        only re-reads, and the payload is the scanner's own inert marker."""
+        key = (base_url, parameter, "stored")
+        if key in self._confirmed:
+            return
+        res = self.scanner._request("GET", benign_url)
+        if not res:
+            return
+        context_desc = self._reflection_point(res, payload)
+        if context_desc is None:
+            return
+        self._confirmed.add(key)
+        finding = Finding(
+            id="XSS-002",
+            name="Stored XSS",
+            category="Cross-Site Scripting",
+            severity=HIGH,
+            confidence="High",
+            url=base_url,
+            parameter=parameter,
+            method="GET",
+            evidence=f"Payload persisted across requests and reflects unescaped "
+                     f"into {context_desc}: {payload[:60]} (static context "
+                     f"analysis only — script execution was not dynamically "
+                     f"confirmed in a browser)",
+            trigger=f"payload={payload}",
+            impact="Stored HTML injection persists server-side and executes in "
+                   "every victim's browser that views the page — session theft, "
+                   "defacement, or malware delivery without further interaction.",
+            remediation="Apply context-aware output encoding on stored user input.",
+            cwe="CWE-79"
+        )
+        # The persisted payload is the response marker: re-firing the benign
+        # re-request and finding the payload again confirms storage.
+        self.attach_proof(finding, method="GET", url=benign_url,
+                          marker=payload)
         self.add_finding(finding)

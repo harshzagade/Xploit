@@ -5,6 +5,7 @@ import re
 import textwrap
 from pathlib import Path
 
+from . import __version__
 from .scanner import Finding, ScanResult, summarize_findings
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -74,15 +75,25 @@ def render_text_report(result: ScanResult, colors: bool = True) -> str:
     target   = result.normalized_target
     meta     = f"{result.scan_mode.upper()}  ·  {result.duration_seconds}s  ·  {result.started_at}"
     coverage = f"{len(result.pages_seen)} pages  ·  {result.forms_seen} forms discovered"
+    verified = sum(1 for f in result.findings if f.verified)
+    total_f  = len(result.findings)
+    proof_line = f"✓ {verified}/{total_f} findings verified with replayable proof" if total_f else None
 
-    box_w = max(len(target), len(meta), len(coverage)) + 4
+    box_w = max(len(target), len(meta), len(coverage),
+                len(proof_line) if proof_line else 0) + 4
     box_w = max(box_w, 54)
 
     lines.append("")
     lines.append(f"┌{'─' * box_w}┐")
+    title_vis = f"SCAN REPORT  ·  xploit v{__version__}"
+    title_pad = box_w - 4 - len(title_vis)
+    lines.append(f"│  {BOLD}{RED}SCAN REPORT{RESET}  {DIM}·  xploit v{__version__}{RESET}"
+                 f"{' ' * title_pad}│")
     lines.append(f"│  {BOLD}{target:<{box_w - 2}}{RESET}│")
     lines.append(f"│  {DIM}{meta:<{box_w - 2}}{RESET}│")
     lines.append(f"│  {DIM}{coverage:<{box_w - 2}}{RESET}│")
+    if proof_line:
+        lines.append(f"│  {GREEN}{proof_line:<{box_w - 2}}{RESET}│")
     lines.append(f"└{'─' * box_w}┘")
     lines.append("")
 
@@ -129,11 +140,15 @@ def render_text_report(result: ScanResult, colors: bool = True) -> str:
         lines.append(f"  {BOLD}{idx:>2}{RESET}  {BOLD}{sanitize_terminal(finding.name)}{RESET}{cwe_str}")
 
         note = sanitize_terminal(finding.verification_note)
-        verified_str = (
-            "yes — replayable proof attached"
-            if finding.verified
-            else (f"no — {note}" if note else "no")
-        )
+        if finding.verified and finding.proof_kind == "timing":
+            verified_str = (f"yes — timing proof attached "
+                            f"(delay >= {finding.proof_delay_s:g}s reproduced)")
+        else:
+            verified_str = (
+                "yes — replayable proof attached"
+                if finding.verified
+                else (f"no — {note}" if note else "no")
+            )
         retest_str = sanitize_terminal(finding.retest_status) if finding.retest_status != "not_run" else ""
 
         for line in filter(None, [

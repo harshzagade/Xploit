@@ -43,16 +43,23 @@ class BaseModule:
                 self.scanner.on_finding(finding)
 
     def attach_proof(self, finding: "Finding", *, method: str, url: str,
-                     marker: str = "", data: str = "") -> "Finding":
+                     marker: str = "", data: str = "",
+                     kind: str = "marker", delay_s: float = 0.0) -> "Finding":
         """Attach replayable proof to a finding before add_finding().
 
         method/url describe the exact request demonstrating the vulnerability;
         data is the urlencoded POST body ("" for GET); marker is the response
         substring (case-insensitive) that confirmed it. An empty marker means
         the confirmation was behavioral, not substring-replayable.
+
+        kind="timing" with delay_s>0 attaches a timing proof instead: the
+        confirmation was a reproducible response delay of at least delay_s
+        seconds, re-measurable on replay.
         """
         finding.proof_method = method.upper()
         finding.proof_url = url
         finding.proof_data = data
         finding.proof_marker = (marker or "").lower()
+        finding.proof_kind = kind
+        finding.proof_delay_s = delay_s
         return finding

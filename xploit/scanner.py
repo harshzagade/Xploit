@@ -48,6 +48,11 @@ class Finding:
     proof_url: str = ""
     proof_data: str = ""    # urlencoded POST body used to replay the proof
     proof_marker: str = ""  # response substring (lowercased) confirming the finding
+    # proof_kind "timing": confirmation was a reproducible response delay, not
+    # a substring. proof_delay_s is the delay threshold (seconds) the proof
+    # request must meet or exceed on replay.
+    proof_kind: str = "marker"
+    proof_delay_s: float = 0.0
     verified: bool = False
     verification_note: str = ""
     # Retest lifecycle: not_run | confirmed | fixed | unverifiable | skipped
@@ -57,7 +62,12 @@ class Finding:
         return asdict(self)
 
     def has_replayable_proof(self) -> bool:
-        return bool(self.proof_method and self.proof_url and self.proof_marker)
+        if self.proof_method and self.proof_url and self.proof_marker:
+            return True
+        # Timing proof: no substring marker, but the delay is reproducible —
+        # re-firing the proof request must reproduce the delay.
+        return (self.proof_kind == "timing" and bool(self.proof_method)
+                and bool(self.proof_url) and self.proof_delay_s > 0)
 
 
 def gate_finding(finding: Finding) -> Finding:
@@ -70,7 +80,13 @@ def gate_finding(finding: Finding) -> Finding:
     """
     if finding.has_replayable_proof():
         finding.verified = True
-        finding.verification_note = "Replayable proof attached (request + response marker)."
+        if finding.proof_kind == "timing":
+            finding.verification_note = (
+                "Replayable timing proof attached: proof request reproducibly "
+                f"delayed the response by >= {finding.proof_delay_s:g}s."
+            )
+        else:
+            finding.verification_note = "Replayable proof attached (request + response marker)."
     elif finding.proof_method and finding.proof_url:
         finding.verified = False
         finding.verification_note = (

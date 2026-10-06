@@ -87,9 +87,13 @@ def retest_findings(scanner: "WebScanner", findings: "list[Finding]") -> dict[st
         if finding.proof_method == "POST" and finding.proof_data:
             kwargs["data"] = dict(parse_qsl(finding.proof_data, keep_blank_values=True))
 
+        is_timing = finding.proof_kind == "timing" and finding.proof_delay_s > 0
         try:
+            import time as _time
+            _t0 = _time.monotonic()
             res = scanner._request(finding.proof_method, finding.proof_url,
                                    quiet=True, **kwargs)
+            _dt = _time.monotonic() - _t0
         except Exception:
             res = None
 
@@ -97,6 +101,23 @@ def retest_findings(scanner: "WebScanner", findings: "list[Finding]") -> dict[st
             finding.retest_status = RETEST_UNVERIFIABLE
             _note(finding, "retest inconclusive: replay request failed")
             stats[RETEST_UNVERIFIABLE] += 1
+        elif is_timing:
+            if _dt >= finding.proof_delay_s:
+                finding.retest_status = RETEST_CONFIRMED
+                _note(finding, f"retest: delay reproduced ({_dt:.1f}s >= "
+                               f"{finding.proof_delay_s:g}s)")
+                stats[RETEST_CONFIRMED] += 1
+            else:
+                blocked_reason = _replay_blocked(res)
+                if blocked_reason:
+                    finding.retest_status = RETEST_UNVERIFIABLE
+                    _note(finding, f"retest inconclusive: replay {blocked_reason}")
+                    stats[RETEST_UNVERIFIABLE] += 1
+                else:
+                    finding.retest_status = RETEST_FIXED
+                    _note(finding, f"retest: delay gone ({_dt:.1f}s < "
+                                   f"{finding.proof_delay_s:g}s)")
+                    stats[RETEST_FIXED] += 1
         elif finding.proof_marker.lower() in res.text.lower():
             finding.retest_status = RETEST_CONFIRMED
             stats[RETEST_CONFIRMED] += 1

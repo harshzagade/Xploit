@@ -22,6 +22,7 @@ class SQLInjectionModule(BaseModule):
             if self._test_error_based(url, param, "GET"): continue
             if self._test_union_based(url, param, "GET"): continue
             if self._test_boolean_based(url, param, "GET"): continue
+            if self._test_time_based(url, param, "GET"): continue
             self._test_stacked_queries(url, param, "GET")
 
     def _check_form(self, form):
@@ -29,6 +30,7 @@ class SQLInjectionModule(BaseModule):
             if self._test_error_based(form.action, param, form.method, form.inputs): continue
             if self._test_union_based(form.action, param, form.method, form.inputs): continue
             if self._test_boolean_based(form.action, param, form.method, form.inputs): continue
+            if self._test_time_based(form.action, param, form.method, form.inputs): continue
             self._test_stacked_queries(form.action, param, form.method, form.inputs)
 
     def _test_error_based(self, url, param, method, base_data=None):
@@ -119,6 +121,58 @@ class SQLInjectionModule(BaseModule):
                              base_data, marker="")
                 return True
 
+    def _timed_payload(self, url, param, method, payload, base_data=None):
+        """Send a payload, returning (response, elapsed_seconds)."""
+        import time
+        start = time.monotonic()
+        res = self._send_payload(url, param, method, payload, base_data)
+        return res, time.monotonic() - start
+
+    def _test_time_based(self, url, param, method, base_data=None):
+        """Time-based blind SQLi: confirm via reproducible response delay.
+
+        Fires DBMS-specific sleep payloads and requires the delay to reproduce
+        on a second firing (differential against a fresh baseline), so a
+        one-off slow response can't confirm. Attaches a timing proof, which
+        the evidence gate treats as verified and --retest can re-measure.
+        """
+        SLEEP_S = 4
+        MARGIN_S = 1.0
+        threshold = SLEEP_S - MARGIN_S
+        if self.scanner.timeout < SLEEP_S + 2:
+            # The sleep wouldn't fit inside the request timeout — any delay
+            # measurement would be cut off, so the technique can't confirm.
+            return False
+        payloads = [
+            f"' OR SLEEP({SLEEP_S})--",    # MySQL / MariaDB
+            f"' AND SLEEP({SLEEP_S})--",
+            f"'; WAITFOR DELAY '0:0:0{SLEEP_S}'--",  # MSSQL
+            f"' OR pg_sleep({SLEEP_S})--",  # PostgreSQL
+        ]
+        base_res, base_dt = self._timed_payload(
+            url, param, method, "sqli_baseline_xploit", base_data)
+        if base_res is None:
+            # No clean baseline: a delay against nothing proves nothing.
+            return False
+
+        for payload in payloads:
+            res, dt = self._timed_payload(url, param, method, payload, base_data)
+            if res is None:
+                continue
+            if dt - base_dt < threshold:
+                continue
+            # Delay observed — confirm it reproduces on a second firing.
+            res2, dt2 = self._timed_payload(url, param, method, payload, base_data)
+            if res2 is not None and dt2 - base_dt >= threshold:
+                self._report(url, param, method, payload,
+                             f"Time-based blind SQLi: response delayed "
+                             f"{dt:.1f}s / {dt2:.1f}s vs {base_dt:.1f}s baseline "
+                             f"(>= {threshold:g}s differential, reproduced twice)",
+                             base_data, marker="",
+                             kind="timing", delay_s=threshold)
+                return True
+        return False
+
     def _test_stacked_queries(self, url, param, method, base_data=None):
         payloads = [
             "'; EXEC sp_MSforeachtable 'SELECT 1'--",
@@ -140,13 +194,16 @@ class SQLInjectionModule(BaseModule):
                              base_data, marker=matched)
                 return True
 
-    def _report(self, url, param, method, payload, evidence, base_data=None, marker=""):
+    def _report(self, url, param, method, payload, evidence, base_data=None,
+                marker="", kind="marker", delay_s=0.0):
         from urllib.parse import urlencode
         ev_lower = evidence.lower()
         if "union" in ev_lower:
             sqli_type, finding_id = "Union-based SQL Injection", "SQLI-003"
         elif "boolean" in ev_lower:
             sqli_type, finding_id = "Boolean-based Blind SQL Injection", "SQLI-004"
+        elif "time-based" in ev_lower:
+            sqli_type, finding_id = "Time-based Blind SQL Injection", "SQLI-002"
         elif "stacked" in ev_lower:
             sqli_type, finding_id = "Stacked Queries SQL Injection", "SQLI-005"
         else:
@@ -175,5 +232,6 @@ class SQLInjectionModule(BaseModule):
             data = dict(base_data) if base_data else {}
             data[param] = payload
             proof_url, proof_data = url, urlencode(data)
-        self.attach_proof(finding, method=method, url=proof_url, marker=marker, data=proof_data)
+        self.attach_proof(finding, method=method, url=proof_url, marker=marker,
+                          data=proof_data, kind=kind, delay_s=delay_s)
         self.add_finding(finding)

@@ -34,9 +34,21 @@ def banner(colors: bool = True) -> str:
  ╚███╔╝ ██████╔╝██║     ██║   ██║██║   ██║
  ██╔██╗ ██╔═══╝ ██║     ██║   ██║██║   ██║
 ██╔╝ ██╗██║     ███████╗╚██████╔╝██║   ██║
-╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝ ╚═╝   ╚═╝
-"""
-    return color(logo.rstrip(), "OK", colors)
+╚═╝  ╚═╝╚═╝     ╚══════╝ ╚═════╝ ╚═╝   ╚═╝""".strip("\n")
+    tagline = "web vulnerability scanner"
+    if not colors:
+        return f"{logo}\n  {tagline}  ·  v{__version__}"
+    # red -> amber gradient, one shade per line
+    shades = ["\033[91m", "\033[91m", "\033[33m",
+              "\033[33m", "\033[93m", "\033[93m"]
+    painted = "\n".join(
+        f"{shades[i % len(shades)]}{ln}{RESET}"
+        for i, ln in enumerate(logo.split("\n"))
+    )
+    return (
+        f"{painted}\n"
+        f"  {DIM}{tagline}{RESET}  {DIM}·{RESET}  {BOLD}v{__version__}{RESET}"
+    )
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -76,6 +88,12 @@ def run_scan(args: argparse.Namespace) -> int:
     colors = not args.no_color
     if not args.quiet and args.format == "text":
         print(banner(colors))
+        _d = DIM if colors else ""
+        _r = RESET if colors else ""
+        _b = BOLD if colors else ""
+        print(f"  {_d}target{_r}  {_b}{args.url}{_r}")
+        print(f"  {_d}mode{_r}    {args.mode} · depth {args.depth} · "
+              f"{args.max_pages} pages · {args.timeout:g}s timeout")
         print("")
 
     try:
@@ -103,27 +121,31 @@ def run_scan(args: argparse.Namespace) -> int:
     # without the tick the bar looks frozen for minutes on slow targets.
     _ui_lock = threading.Lock()
     _ui_state = {"current": 0, "total": 1, "phase": "", "tick": 0,
-                 "requests": 0, "last_draw": 0.0}
+                 "requests": 0, "findings": 0, "last_draw": 0.0,
+                 "started": time.monotonic()}
     _SPIN = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
     def _redraw():
         st = _ui_state
         spin    = color(_SPIN[st["tick"] % len(_SPIN)], "OK", colors)
         percent = max(0, min(100, int((st["current"] / st["total"]) * 100))) if st["total"] > 0 else 0
-        W       = 28
+        W       = 22
         filled  = int((percent / 100) * W)
         bar     = (
-            color("▓" * filled,       "OK",   colors) +
-            color("░" * (W - filled), "INFO", colors)
+            color("━" * filled,       "OK",   colors) +
+            color("─" * (W - filled), "INFO", colors)
         )
         _b = BOLD  if colors else ""
         _r = RESET if colors else ""
         _d = DIM   if colors else ""
         _k = "\033[K" if colors else ""
-        label = st["phase"][:22]
+        label = st["phase"][:20]
+        elapsed = int(time.monotonic() - st["started"])
         req = f"  {_d}{st['requests']} req{_r}" if st["requests"] else ""
+        clock = f"  {_d}{elapsed}s{_r}"
+        hits = f"  {_d}▲ {st['findings']}{_r}" if st["findings"] else ""
         sys.stdout.write(
-            f"\r  {spin}  {_d}{label:<22}{_r}  {bar}  {_b}{percent:>3}%{_r}{req}{_k}"
+            f"\r  {spin}  {_d}{label:<20}{_r}  {bar}  {_b}{percent:>3}%{_r}{req}{clock}{hits}{_k}"
         )
         sys.stdout.flush()
         st["last_draw"] = time.monotonic()
@@ -147,6 +169,7 @@ def run_scan(args: argparse.Namespace) -> int:
 
     def finding_callback(finding: Finding):
         with _ui_lock:
+            _ui_state["findings"] += 1
             if colors:
                 sys.stdout.write("\r\033[K")
             else:
@@ -156,14 +179,20 @@ def run_scan(args: argparse.Namespace) -> int:
             _rst  = RESET if colors else ""
             _bold = BOLD  if colors else ""
             _dim  = DIM   if colors else ""
-            _sev  = f"{_col}{_bold} {finding.severity:<6}{_rst}"
-            _name = f"{_bold}{finding.name}{_rst}"
-            print(f"  {_sev}  {_name}")
+            _ok   = COLORS["OK"] if colors else ""
+            n = _ui_state["findings"]
+            if finding.verified:
+                _proof = f"  {_ok}✓ verified{_rst}"
+            else:
+                _proof = f"  {_dim}○ unverified{_rst}"
+            print(f"  {_col}▌{_rst} {_col}{_bold}{finding.severity:<6}{_rst} "
+                  f"{_bold}#{n} {finding.name}{_rst}{_proof}")
             # strip scheme for compactness
             short_url = finding.url.replace("https://", "").replace("http://", "")
-            print(f"          {_dim}{short_url}{_rst}")
+            detail = f"  {_dim}└─ {short_url}{_rst}"
             if finding.parameter:
-                print(f"          {_dim}param  {_rst}{finding.parameter}")
+                detail += f"  {_dim}· param: {finding.parameter}{_rst}"
+            print(detail)
             sys.stdout.flush()
             _ui_state["last_draw"] = 0.0  # force next tick to redraw
 
