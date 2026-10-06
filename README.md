@@ -208,6 +208,24 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 
 ---
 
+## 📸 Screenshots
+
+Real scan output from Xploit v1.6.0 against a local deliberately-vulnerable test app:
+
+**Banner & scan startup**
+![Xploit banner](assets/screenshots/01-banner.png)
+
+**Live findings** — severity badges with `✓ verified` / `○ unverified` evidence gating
+![Live findings](assets/screenshots/02-live-findings.png)
+
+**Scan report** — every finding ships with CWE, evidence, impact and fix guidance
+![Scan report](assets/screenshots/03-scan-report.png)
+
+**Retest mode** — re-fires each finding's proof request (`--retest`)
+![Retest](assets/screenshots/04-retest.png)
+
+---
+
 ## 📊 Sample Output
 
 ```
