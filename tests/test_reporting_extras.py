@@ -105,6 +105,22 @@ def test_json_report_is_valid_json_with_expected_keys():
     assert data["findings"] == []
 
 
+def test_json_report_includes_duration_and_finding_counts():
+    res = empty_result()
+    res.duration_seconds = 12.5
+    res.findings = [
+        make_finding(id="H1", severity=HIGH, verified=True),
+        make_finding(id="H2", severity=HIGH),
+        make_finding(id="L1", severity=LOW),
+    ]
+    data = json.loads(render_json_report(res))
+    assert data["duration_seconds"] == 12.5
+    assert data["summary"][HIGH] == 2
+    assert data["summary"][LOW] == 1
+    assert data["total_findings"] == 3
+    assert data["verified_findings"] == 1
+
+
 # --- write_report ---------------------------------------------------------------------
 
 def test_write_report_creates_parent_dirs(tmp_path):

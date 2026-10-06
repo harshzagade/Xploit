@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Added
+- JSON report now includes top-level `total_findings` and `verified_findings`
+  counts alongside the per-severity `summary`, so dashboards and CI pipelines
+  can consume scan totals without post-processing the findings array.
+
 ### Bug-fix pass (deep audit)
 - Fixed GET-form injection payloads being silently dropped: `mutate_query()`
   now appends the parameter (plus sibling form fields) when the action URL

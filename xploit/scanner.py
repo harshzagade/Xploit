@@ -129,6 +129,7 @@ class ScanResult:
     errors: list[str]
 
     def to_dict(self) -> dict:
+        summary = summarize_findings(self.findings)
         return {
             "target": self.target,
             "normalized_target": self.normalized_target,
@@ -143,7 +144,9 @@ class ScanResult:
             "forms_seen": self.forms_seen,
             "findings": [finding.to_dict() for finding in self.findings],
             "errors": self.errors,
-            "summary": summarize_findings(self.findings),
+            "summary": summary,
+            "total_findings": len(self.findings),
+            "verified_findings": sum(1 for f in self.findings if f.verified),
         }
 
 SQL_ERRORS = (
