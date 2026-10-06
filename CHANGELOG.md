@@ -2,10 +2,33 @@
 
 ## Unreleased
 
+### Docs
+- README: added 4 real terminal captures (`assets/screenshots/`, 2026-10-06) —
+  banner, live findings with `✓ verified` / `○ unverified` evidence gating,
+  scan report, and `--retest` mode — taken from a real scan of the bundled
+  deliberately-vulnerable test app.
+- README: documented the `--output` and `--retest` CLI flags (previously
+  missing from the CLI options section).
+- README: removed the GitHub Actions workflow bullet — the repo has no
+  `.github/` workflow; kept the JSON-output and quiet-mode CI notes, and
+  documented the exit-code contract (1 when any HIGH finding is reported,
+  0 otherwise).
+- README/HOW_TO_TEST expected-results correction: the bundled test app now
+  yields 10 findings (4 HIGH, 4 MEDIUM, 1 LOW, 1 INFO), verified by running
+  Xploit v1.6.0 against it. The test app's `/sqli` endpoint no longer trips
+  the SQLi module: its sqlite "unrecognized token" error is not among the
+  `SQL_ERRORS` markers, so error/union-based checks don't fire.
+
 ### Added
 - JSON report now includes top-level `total_findings` and `verified_findings`
   counts alongside the per-severity `summary`, so dashboards and CI pipelines
   can consume scan totals without post-processing the findings array.
+- Added 25 progress-heartbeat tests (`tests/test_progress_heartbeat.py`):
+  on_request hook contract, end-to-end run_scan wiring of the live N-req
+  counter, the redirect-hop bound (11 requests for a long chain, not 30),
+  and the 5 MB oversize-page cap.
+- Added 100 more regression tests (188 total passing at the time; the suite
+  now stands at 227 passing).
 
 ### Bug-fix pass (deep audit)
 - Fixed GET-form injection payloads being silently dropped: `mutate_query()`
@@ -24,6 +47,13 @@
 - Fixed SQLi false positives: removed generic "database error" /
   "internal server error" markers; error-based and stacked-query checks use
   fresh baseline probes instead of stale crawl responses.
+- Fixed `max_pages` race in the parallel crawler: concurrent future
+  completions could overshoot `max_pages`. The cap is now enforced per
+  completed future, and leftover in-flight requests are cancelled when the
+  cap is hit so the target gets no pointless traffic (plus a 5x hammer
+  regression test).
+- Fixed `--no-color` leaking ANSI escape codes into the saved report:
+  report-file output is now clean under `--no-color` and colored otherwise.
 - Fixed vacuous XSS confirmation: reflections are now judged by the markup
   *before* the payload (comments, textarea/title/style/script and inert
   attributes rejected); the payload itself must carry an active vector.

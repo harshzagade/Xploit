@@ -48,9 +48,9 @@
   - Path scoping for targeted assessments
 
 - **CI/CD Integration**
-  - GitHub Actions workflow for automated testing
   - JSON output for pipeline integration
   - Quiet mode for scripting
+  - Exit code is 1 when any HIGH finding is reported, 0 otherwise
 
 ---
 
@@ -155,7 +155,9 @@ python3 vulnerable_test_app.py
 xploit http://127.0.0.1:5000/ --mode full
 ```
 
-**Expected Results:** 11 findings — 5 HIGH, 4 MEDIUM, 1 LOW, 1 INFO — including SQL Injection and XSS
+**Expected Results:** 10 findings — 4 HIGH, 4 MEDIUM, 1 LOW, 1 INFO — including XSS, default credentials, IDOR, and missing security headers
+
+(Xploit exits with code 1 whenever any HIGH finding is reported, 0 otherwise.)
 
 See [HOW_TO_TEST.md](./HOW_TO_TEST.md) for detailed testing instructions.
 
@@ -284,6 +286,10 @@ options:
   --scope-prefix SCOPE_PREFIX
                         restrict crawling to a path prefix
   --format {text,json}  output format
+  --output PATH         write the report to a file (ANSI colors stripped)
+  --retest              re-fire each finding's proof request to confirm it
+                        still reproduces (active traffic; skipped in passive
+                        mode)
   --header NAME: VALUE  add a custom HTTP header (repeatable)
   --cookie NAME=VALUE   add a cookie (repeatable)
   --insecure            disable SSL certificate verification
