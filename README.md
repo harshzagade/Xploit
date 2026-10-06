@@ -155,7 +155,7 @@ python3 vulnerable_test_app.py
 xploit http://127.0.0.1:5000/ --mode full
 ```
 
-**Expected Results:** 10 findings — 4 HIGH, 4 MEDIUM, 1 LOW, 1 INFO — including XSS, default credentials, IDOR, and missing security headers
+**Expected Results:** 11 findings — 5 HIGH, 4 MEDIUM, 1 LOW, 1 INFO — including SQL injection, XSS, default credentials, IDOR, and missing security headers
 
 (Xploit exits with code 1 whenever any HIGH finding is reported, 0 otherwise.)
 

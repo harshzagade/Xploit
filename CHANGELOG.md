@@ -13,11 +13,25 @@
   `.github/` workflow; kept the JSON-output and quiet-mode CI notes, and
   documented the exit-code contract (1 when any HIGH finding is reported,
   0 otherwise).
-- README/HOW_TO_TEST expected-results correction: the bundled test app now
-  yields 10 findings (4 HIGH, 4 MEDIUM, 1 LOW, 1 INFO), verified by running
-  Xploit v1.6.0 against it. The test app's `/sqli` endpoint no longer trips
-  the SQLi module: its sqlite "unrecognized token" error is not among the
-  `SQL_ERRORS` markers, so error/union-based checks don't fire.
+- README/HOW_TO_TEST expected-results correction: the bundled test app yields
+  11 findings (5 HIGH, 4 MEDIUM, 1 LOW, 1 INFO), verified by running
+  Xploit v1.6.0 against it. (An earlier draft of this entry recorded
+  10/4 here: a missing `"unrecognized token"` sqlite marker had blinded the
+  SQLi module on the test app's `/sqli` endpoint — fixed under Unreleased,
+  see "Fixed" below.)
+
+### Fixed
+- Restored error-based SQLi detection on sqlite backends: added
+  `"unrecognized token"` to `SQL_ERRORS` in `xploit/scanner.py`. The bundled
+  test app's `/sqli` endpoint leaks exactly this sqlite diagnostic, but no
+  marker matched it, so the SQLi module was blind there (0 findings). The
+  marker is FP-safe: the fresh-baseline gate suppresses it whenever a benign
+  response already contains it. Bundled-app expected results are back to
+  11 findings (5 HIGH, 4 MEDIUM, 1 LOW, 1 INFO).
+- Added regression tests (`SqliteErrorMarkerTest` in
+  `tests/test_sharpened_proofs.py`, 2 tests): the sqlite diagnostic fires
+  exactly one SQLI-001 finding with the real module end-to-end, and stays
+  silent when the marker is already present in the benign baseline.
 
 ### Added
 - JSON report now includes top-level `total_findings` and `verified_findings`
@@ -28,7 +42,7 @@
   counter, the redirect-hop bound (11 requests for a long chain, not 30),
   and the 5 MB oversize-page cap.
 - Added 100 more regression tests (188 total passing at the time; the suite
-  now stands at 227 passing).
+  now stands at 229 passing).
 
 ### Bug-fix pass (deep audit)
 - Fixed GET-form injection payloads being silently dropped: `mutate_query()`

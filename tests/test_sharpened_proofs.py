@@ -320,5 +320,87 @@ class TimingReportTest(unittest.TestCase):
         self.assertIn("timing proof", out)
 
 
+
+# --------------------------------------------------------------------------
+# sqlite "unrecognized token" error marker
+# --------------------------------------------------------------------------
+
+class _SqliteErrorHandler(BaseHTTPRequestHandler):
+    """Simulates the bundled vulnerable_test_app /sqli endpoint: returns a
+    sqlite diagnostic when the id param carries an injected quote, and a
+    normal user-info page otherwise."""
+
+    def do_GET(self) -> None:
+        q = parse_qs(urlparse(self.path).query)
+        ival = q.get("id", [""])[0]
+        if "'" in ival:
+            body = ("<html><body><h1>Database Error</h1>"
+                    "<pre>unrecognized token: \"'\"</pre></body></html>")
+        else:
+            body = ("<html><body><h1>User Info</h1>"
+                    "<p>id: 1, name: alice</p></body></html>")
+        raw = body.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class _SqliteErrorDocsHandler(BaseHTTPRequestHandler):
+    """Benign docs page that literally describes the sqlite diagnostic. The
+    baseline gate must suppress the marker here: it is already present in
+    the benign response."""
+
+    def do_GET(self) -> None:
+        body = ("<html><body><h1>Error reference</h1>"
+                "<p>The sqlite diagnostic 'unrecognized token' means the "
+                "query string contained an unterminated quote.</p></body></html>")
+        raw = body.encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+class SqliteErrorMarkerTest(unittest.TestCase):
+    """Regression for the sqlite SQLi blind spot: the bundled test app's
+    /sqli endpoint leaks 'unrecognized token' but no SQL_ERRORS marker
+    matched it, so error-based detection fired zero findings."""
+
+    def _run_sqli(self, handler) -> WebScanner:
+        server = _serve(handler)
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/sqli?id=1"
+            scanner = WebScanner(url, timeout=3.0, mode=FULL)
+            scanner.pages = {url: None}
+            scanner.forms = []
+            SQLInjectionModule(scanner).run()
+            return scanner
+        finally:
+            server.shutdown()
+
+    def test_sqlite_error_marker_fires(self) -> None:
+        scanner = self._run_sqli(_SqliteErrorHandler)
+        err = [f for f in scanner.findings if f.id == "SQLI-001"]
+        self.assertEqual(len(err), 1,
+                         "expected one error-based SQLi finding")
+        self.assertIn("unrecognized token", err[0].evidence)
+        self.assertEqual(err[0].parameter, "id")
+
+    def test_marker_in_baseline_stays_quiet(self) -> None:
+        scanner = self._run_sqli(_SqliteErrorDocsHandler)
+        err = [f for f in scanner.findings if f.id == "SQLI-001"]
+        self.assertEqual(err, [],
+                         "marker already in benign baseline: must not fire")
+
+
 if __name__ == "__main__":
     unittest.main()

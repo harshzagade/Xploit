@@ -156,6 +156,7 @@ SQL_ERRORS = (
     "quoted string not properly terminated",
     "postgresql query failed",
     "sqlite error",
+    "unrecognized token",
     "sqlstate",
     "ora-01756",
     "microsoft ole db provider for sql server",
