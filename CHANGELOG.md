@@ -34,6 +34,15 @@
   silent when the marker is already present in the benign baseline.
 
 ### Added
+- XSS module: 8 new event-handler attribute context payloads — single-quote
+  attribute breakout (`xploit' onfocus='alert(1)`), a no-interaction
+  breakout pair (`xploit" autofocus onfocus="alert(1)`), autofocus carriers
+  (`<input>` / `<select>` with `autofocus onfocus`), a modern pointer-handler
+  breakout (`onpointerover`), an SMIL `onbegin` probe, an `<audio onerror>`
+  carrier, and a tab-separated `<img onerror>` variant for space-based
+  filters. The reflection check's active-vector markers were extended with
+  `onfocus`, `autofocus`, `onpointerover`, and `onbegin` so the new probes
+  confirm when reflected into executable contexts.
 - JSON report now includes top-level `total_findings` and `verified_findings`
   counts alongside the per-severity `summary`, so dashboards and CI pipelines
   can consume scan totals without post-processing the findings array.

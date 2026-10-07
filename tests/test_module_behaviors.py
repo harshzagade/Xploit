@@ -104,6 +104,35 @@ def test_xss_element_body_is_executable():
     assert exe is True
 
 
+def test_xss_single_quoted_handler_attribute_is_executable():
+    exe, note = XSSModule._executable_context("<input value='x' onfocus='")
+    assert exe is True and "event-handler" in note
+
+
+def _xss_module():
+    return XSSModule(WebScanner("http://x/", mode="passive"))
+
+
+def test_xss_event_handler_payloads_confirm_in_executable_context():
+    """Every new event-handler payload must carry an active vector that the
+    reflection check recognises when the payload lands in an executable
+    context (regression guard for the active-vector list)."""
+    new_payloads = [
+        "xploit' onfocus='alert(1)",
+        'xploit" autofocus onfocus="alert(1)',
+        "<input autofocus onfocus=alert(1)>",
+        "<select autofocus onfocus=alert(1)>",
+        'xploit" onpointerover="alert(1)',
+        "<svg><animate onbegin=alert(1) attributeName=x dur=1s>",
+        "<audio src=x onerror=alert(1)>",
+        "<img src=x\tonerror=alert(1)>",
+    ]
+    module = _xss_module()
+    for payload in new_payloads:
+        ctx = module._reflection_point(Resp("<p>" + payload + "</p>"), payload)
+        assert ctx is not None, f"payload not confirmed: {payload!r}"
+
+
 # --- CSRF token words ------------------------------------------------------------
 
 def test_csrf_token_detected_by_name():
