@@ -65,6 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=(PASSIVE, ACTIVE, FULL), default=FULL, help="scan mode: passive, active, or full")
     parser.add_argument("--rate-limit", type=float, default=0.0, help="minimum delay between HTTP requests in seconds")
     parser.add_argument("--scope-prefix", default="/", help="restrict crawling/checks to a path prefix")
+    parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
+                        help="skip crawling URLs matching PATTERN (Python regex, matched against "
+                             "the full URL); may be repeated")
     parser.add_argument("--format", choices=("text", "json"), default="text", help="output format")
     parser.add_argument("--output", metavar="PATH", default=None, help="write the report to a file (ANSI colors stripped)")
     parser.add_argument("--retest", action="store_true", help="re-fire each finding's proof request to confirm it still reproduces (active traffic; skipped in passive mode)")
@@ -105,6 +108,7 @@ def run_scan(args: argparse.Namespace) -> int:
             mode=args.mode,
             rate_limit=args.rate_limit,
             scope_prefix=args.scope_prefix,
+            exclude=args.exclude,
             verify=not args.insecure,
         )
     except ValueError as exc:
@@ -257,6 +261,7 @@ def build_interactive_args(input_fn=input) -> argparse.Namespace:
         mode=FULL,
         rate_limit=0.0,
         scope_prefix="/",
+        exclude=[],
         format="text",
         output=None,
         retest=False,
@@ -318,6 +323,8 @@ def render_text_result(result: ScanResult, *, colors: bool = True) -> None:
     print(f"Target URL        : {result.normalized_target}")
     print(f"Scan mode         : {result.scan_mode.upper()}")
     print(f"Scope prefix      : {result.scope_prefix}")
+    if result.exclude_patterns:
+        print(f"Exclude patterns  : {', '.join(result.exclude_patterns)}")
     print(f"Duration          : {result.duration_seconds}s")
     print(f"Pages crawled     : {len(result.pages_seen)}")
     print(f"Forms discovered  : {result.forms_seen}")

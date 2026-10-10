@@ -127,6 +127,7 @@ class ScanResult:
     forms_seen: int
     findings: list[Finding]
     errors: list[str]
+    exclude_patterns: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         summary = summarize_findings(self.findings)
@@ -144,6 +145,7 @@ class ScanResult:
             "forms_seen": self.forms_seen,
             "findings": [finding.to_dict() for finding in self.findings],
             "errors": self.errors,
+            "exclude_patterns": list(self.exclude_patterns),
             "summary": summary,
             "total_findings": len(self.findings),
             "verified_findings": sum(1 for f in self.findings if f.verified),
@@ -273,6 +275,7 @@ class WebScanner:
         mode: str = FULL,
         rate_limit: float = 0.0,
         scope_prefix: str | None = None,
+        exclude: list[str] | None = None,
         threads: int = 5,
         user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         verify: bool = True,
@@ -285,6 +288,11 @@ class WebScanner:
         self.mode = mode
         self.rate_limit = rate_limit
         self.scope_prefix = self._normalize_scope_prefix(scope_prefix)
+        # URL exclusion patterns (--exclude): each is a Python regex matched
+        # against the full URL with re.search. Compiled eagerly so a bad
+        # pattern fails fast with a clear error instead of mid-crawl.
+        self.exclude: list[str] = list(exclude or [])
+        self._exclude_res: list[re.Pattern[str]] = self._compile_exclude_patterns(self.exclude)
         self.threads = max(1, threads)
         self.verify = verify
         # Guards _request_count and _last_request_at, which are touched from
@@ -405,6 +413,7 @@ class WebScanner:
             forms_seen=len(self.forms),
             findings=self.findings,
             errors=self.errors,
+            exclude_patterns=list(self.exclude),
         )
 
     # Bound for manual redirect following. requests' own default is 30, which
@@ -557,7 +566,8 @@ class WebScanner:
                                 if not link:
                                     continue
                                 norm = normalize_path(link)
-                                if link not in seen and norm not in self._normalized_seen and self._in_scope(link):
+                                if (link not in seen and norm not in self._normalized_seen
+                                        and self._in_scope(link) and not self._excluded(link)):
                                     seen.add(link)
                                     self._normalized_seen.add(norm)
                                     futures[executor.submit(self._request, "GET", link)] = (link, depth + 1)
@@ -619,7 +629,8 @@ class WebScanner:
                         except ValueError:
                             continue
                     entry_points.add(candidate)
-        return [url for url in entry_points if self._in_scope(url)]
+        return [url for url in entry_points
+                if self._in_scope(url) and not self._excluded(url)]
 
     @staticmethod
     def _urls_from_text(text: str) -> set[str]:
@@ -672,6 +683,20 @@ class WebScanner:
         val = prefix.strip()
         if not val.startswith("/"): val = f"/{val}"
         return val.rstrip("/") or "/"
+
+    @staticmethod
+    def _compile_exclude_patterns(patterns: list[str]) -> list[re.Pattern[str]]:
+        compiled: list[re.Pattern[str]] = []
+        for pattern in patterns:
+            try:
+                compiled.append(re.compile(pattern))
+            except re.error as exc:
+                raise ValueError(f"invalid --exclude pattern {pattern!r}: {exc}")
+        return compiled
+
+    def _excluded(self, url: str) -> bool:
+        """True when any --exclude pattern matches the full URL."""
+        return any(rx.search(url) for rx in self._exclude_res)
 
     def _respect_rate_limit(self):
         if self.rate_limit <= 0: return

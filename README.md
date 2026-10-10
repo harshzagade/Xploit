@@ -136,6 +136,14 @@ xploit https://target.example --rate-limit 0.5
 xploit https://target.example/api --scope-prefix /api
 ```
 
+### Exclude URL Patterns from the Crawl
+```bash
+xploit https://target.example --exclude '/logout' --exclude '\.pdf$'
+```
+Each `--exclude` is a Python regex matched against the full URL (repeatable).
+Excluded URLs are never requested and their links are never followed, so the
+scan skips noisy areas like logout endpoints or binary downloads.
+
 ### Run Without Installing
 ```bash
 python3 xploit.py https://target.example
@@ -285,6 +293,8 @@ options:
                         minimum delay between requests in seconds
   --scope-prefix SCOPE_PREFIX
                         restrict crawling to a path prefix
+  --exclude PATTERN     skip crawling URLs matching PATTERN (Python regex,
+                        matched against the full URL); may be repeated
   --format {text,json}  output format
   --output PATH         write the report to a file (ANSI colors stripped)
   --retest              re-fire each finding's proof request to confirm it

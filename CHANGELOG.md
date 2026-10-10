@@ -34,6 +34,15 @@
   silent when the marker is already present in the benign baseline.
 
 ### Added
+- `--exclude PATTERN` CLI flag (repeatable): skips crawling any URL matching
+  the pattern. Patterns are Python regexes matched against the full URL and are
+  compiled eagerly, so an invalid pattern fails fast with a clear error.
+  Exclusions apply to entry-point discovery (robots.txt/sitemap candidates)
+  and to every followed link; excluded URLs are never requested. `WebScanner`
+  takes a matching `exclude=[...]` keyword, `ScanResult` carries
+  `exclude_patterns` (text report prints them, JSON report includes them), and
+  `tests/test_exclude_flag.py` covers parsing, regex semantics, and an
+  end-to-end crawl against a local HTTP server.
 - XSS module: 8 new event-handler attribute context payloads — single-quote
   attribute breakout (`xploit' onfocus='alert(1)`), a no-interaction
   breakout pair (`xploit" autofocus onfocus="alert(1)`), autofocus carriers
