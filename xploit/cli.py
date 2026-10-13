@@ -64,6 +64,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=6.0, help="HTTP timeout per request in seconds (default: 6)")
     parser.add_argument("--mode", choices=(PASSIVE, ACTIVE, FULL), default=FULL, help="scan mode: passive, active, or full")
     parser.add_argument("--rate-limit", type=float, default=0.0, help="minimum delay between HTTP requests in seconds")
+    parser.add_argument("--jitter", type=float, default=0.0,
+                        help="add up to N extra random seconds between requests "
+                             "(smooths request timing; default: 0)")
     parser.add_argument("--scope-prefix", default="/", help="restrict crawling/checks to a path prefix")
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                         help="skip crawling URLs matching PATTERN (Python regex, matched against "
@@ -107,6 +110,7 @@ def run_scan(args: argparse.Namespace) -> int:
             timeout=args.timeout,
             mode=args.mode,
             rate_limit=args.rate_limit,
+            jitter=args.jitter,
             scope_prefix=args.scope_prefix,
             exclude=args.exclude,
             verify=not args.insecure,
@@ -260,6 +264,7 @@ def build_interactive_args(input_fn=input) -> argparse.Namespace:
         timeout=6.0,
         mode=FULL,
         rate_limit=0.0,
+        jitter=0.0,
         scope_prefix="/",
         exclude=[],
         format="text",

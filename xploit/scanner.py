@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import random
 import re
 import threading
 import time
@@ -280,6 +281,7 @@ class WebScanner:
         user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         verify: bool = True,
         read_deadline: float | None = None,
+        jitter: float = 0.0,
     ) -> None:
         self.target = target
         self.root = normalize_url(target)
@@ -298,6 +300,12 @@ class WebScanner:
         self.verify = verify
         if read_deadline is not None and read_deadline <= 0:
             raise ValueError("read_deadline must be positive")
+        if jitter < 0:
+            raise ValueError("jitter must be >= 0")
+        # Random extra delay (seconds) added to each request's spacing.
+        # A fixed --rate-limit produces metronomic traffic that naive
+        # rate-based WAF rules fingerprint easily; jitter smooths it out.
+        self.jitter = jitter
         # Total bound for reading one response body (see _consume_body).
         # requests' `timeout` is per socket operation, so without this a
         # slow-drip server bypasses --timeout entirely and the scan hangs.
@@ -824,13 +832,16 @@ class WebScanner:
         return any(rx.search(url) for rx in self._exclude_res)
 
     def _respect_rate_limit(self):
-        if self.rate_limit <= 0: return
+        if self.rate_limit <= 0 and self.jitter <= 0: return
         # Reserve the next slot under the lock so concurrent crawler threads
         # can't all observe a stale _last_request_at and burst together.
         # The sleep itself happens outside the lock.
         with self._lock:
             now = time.monotonic()
-            earliest = self._last_request_at + self.rate_limit
+            gap = self.rate_limit
+            if self.jitter > 0:
+                gap += random.uniform(0, self.jitter)
+            earliest = self._last_request_at + gap
             if now < earliest:
                 delay = earliest - now
                 self._last_request_at = earliest

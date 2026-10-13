@@ -131,6 +131,14 @@ xploit https://target.example --format json --output report.json --quiet
 xploit https://target.example --rate-limit 0.5
 ```
 
+### Scan with Rate Limiting + Jitter
+```bash
+xploit https://target.example --rate-limit 0.5 --jitter 0.3
+```
+Adds up to 0.3 random extra seconds between requests so scan traffic
+isn't metronomic (fixed intervals are easy for rate-based WAF rules to
+fingerprint).
+
 ### Scope Scan to Specific Path
 ```bash
 xploit https://target.example/api --scope-prefix /api
@@ -291,6 +299,8 @@ options:
                         scan mode
   --rate-limit RATE_LIMIT
                         minimum delay between requests in seconds
+  --jitter JITTER       add up to N extra random seconds between requests
+                        (smooths request timing; default: 0)
   --scope-prefix SCOPE_PREFIX
                         restrict crawling to a path prefix
   --exclude PATTERN     skip crawling URLs matching PATTERN (Python regex,

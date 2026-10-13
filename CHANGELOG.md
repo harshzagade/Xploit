@@ -50,6 +50,13 @@
   silent when the marker is already present in the benign baseline.
 
 ### Added
+- `--jitter N` CLI flag (and matching `WebScanner(jitter=...)` keyword):
+  adds up to N extra random seconds to each request's spacing, on top of
+  `--rate-limit`. A fixed rate limit produces metronomic traffic that naive
+  rate-based WAF rules fingerprint easily; jitter smooths the timing out.
+  Negative values are rejected; `tests/test_rate_jitter.py` covers
+  validation, the delay math (deterministic via monkeypatched uniform/sleep),
+  and the CLI surface.
 - `--exclude PATTERN` CLI flag (repeatable): skips crawling any URL matching
   the pattern. Patterns are Python regexes matched against the full URL and are
   compiled eagerly, so an invalid pattern fails fast with a clear error.
