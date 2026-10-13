@@ -21,6 +21,22 @@
   see "Fixed" below.)
 
 ### Fixed
+- HTTP read-path hang: full/active scans could stall 15+ minutes on a single
+  ESTABLISHED connection (process sleeping in `poll()`), ignoring `--timeout`.
+  Root cause: `requests`' timeout is per socket operation, and response bodies
+  were read with plain `res.text`/`res.content` — a server dribbling one byte
+  every (timeout - 1) seconds holds the connection open forever. `_request`
+  now streams every body through `_consume_body`, which reads in a daemon
+  thread with a hard total deadline (`read_deadline`, default
+  `max(5 * timeout, 30)`s, overridable via `WebScanner(read_deadline=...)`).
+  On expiry the socket is shut down for reading (a cross-thread `close()`
+  would block on the BufferedReader lock held by the in-flight read) and
+  whatever arrived is kept, so modules see partial content instead of the
+  scan hanging. Also new: a 10 MB per-response body cap, lenient
+  Content-Length enforcement (short bodies are kept and the shortfall is
+  logged instead of raising `IncompleteRead`), and explicit release of
+  redirect-hop connections. `tests/test_read_deadline.py` covers the drip,
+  abort, truncation, and derivation cases against a local HTTP server.
 - Restored error-based SQLi detection on sqlite backends: added
   `"unrecognized token"` to `SQL_ERRORS` in `xploit/scanner.py`. The bundled
   test app's `/sqli` endpoint leaks exactly this sqlite diagnostic, but no

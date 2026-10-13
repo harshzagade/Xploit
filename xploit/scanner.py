@@ -279,6 +279,7 @@ class WebScanner:
         threads: int = 5,
         user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         verify: bool = True,
+        read_deadline: float | None = None,
     ) -> None:
         self.target = target
         self.root = normalize_url(target)
@@ -295,6 +296,14 @@ class WebScanner:
         self._exclude_res: list[re.Pattern[str]] = self._compile_exclude_patterns(self.exclude)
         self.threads = max(1, threads)
         self.verify = verify
+        if read_deadline is not None and read_deadline <= 0:
+            raise ValueError("read_deadline must be positive")
+        # Total bound for reading one response body (see _consume_body).
+        # requests' `timeout` is per socket operation, so without this a
+        # slow-drip server bypasses --timeout entirely and the scan hangs.
+        self.read_deadline = (max(timeout * self.READ_DEADLINE_FACTOR,
+                                  self.MIN_READ_DEADLINE)
+                              if read_deadline is None else read_deadline)
         # Guards _request_count and _last_request_at, which are touched from
         # crawler worker threads.
         self._lock = threading.Lock()
@@ -419,6 +428,16 @@ class WebScanner:
     # Bound for manual redirect following. requests' own default is 30, which
     # turns a redirect loop into a 30-request stall before failing.
     MAX_REDIRECTS = 10
+    # Hard cap on response-body bytes read per request (memory bound). Pages
+    # bigger than this are truncated; _crawl already skips HTML parsing above
+    # 5 MB, so analysis never depends on the tail.
+    MAX_BODY_BYTES = 10_000_000
+    # Total seconds allowed for reading one response body, derived from the
+    # per-request --timeout. requests' timeout is per socket operation, so a
+    # server dribbling bytes just under the timeout holds the connection open
+    # forever; this deadline bounds the read phase instead.
+    READ_DEADLINE_FACTOR = 5
+    MIN_READ_DEADLINE = 30.0
 
     def _request(self, method: str, url: str, *, quiet: bool = False, **kwargs) -> requests.Response | None:
         with self._lock:
@@ -436,6 +455,7 @@ class WebScanner:
                 method, url, timeout=self.timeout,
                 allow_redirects=False,  # manual: bounded, same-origin only
                 verify=self.verify,
+                stream=True,  # body is consumed by _consume_body with a hard deadline
                 **kwargs
             )
         except (requests.exceptions.InvalidSchema,
@@ -480,12 +500,16 @@ class WebScanner:
                     kwargs = {k: v for k, v in kwargs.items()
                               if k not in ("data", "json", "files")}
                     method = "GET"
+                # Hop bodies are never read — release the connection before
+                # following so streamed responses don't pin pool connections.
+                res.close()
                 self._respect_rate_limit()
                 try:
                     res = self.session.request(
                         next_method, target, timeout=self.timeout,
                         allow_redirects=False,
                         verify=self.verify,
+                        stream=True,
                         **kwargs
                     )
                 except Exception as exc:
@@ -498,10 +522,111 @@ class WebScanner:
                         f"{method} {url}: exceeded {self.MAX_REDIRECTS} redirects")
                 # res is the last 3xx; fall through and return it.
 
+        res = self._consume_body(res, method, res.url, quiet=quiet)
+
         if not res.ok and not quiet and res.status_code != 404:
             # 404s are expected during sensitive-file probing; logging every
             # one as an error buries real failures in noise.
             self.errors.append(f"{method} {url}: {res.status_code} {res.reason}")
+        return res
+
+    def _consume_body(self, res: requests.Response, method: str, url: str,
+                      *, quiet: bool = False) -> requests.Response:
+        """Read the response body with a hard total deadline.
+
+        `requests`' `timeout` applies per socket operation, so a server that
+        dribbles one byte every (timeout - 1) seconds holds the connection
+        open forever while `res.text`/`res.content` never return — the
+        multi-minute `poll()` stall observed on full/active scans. A single
+        blocking `read()` can't be deadline-checked from the same thread
+        (small chunks make every large page crawl; big chunks stall on a
+        drip), so the body is read in a daemon thread with large chunks and
+        the deadline is enforced with `join()`. On expiry the socket is shut
+        down for reading to unblock the reader; whatever arrived by then is
+        kept (truncated) so the passive modules still see partial content
+        instead of the scan hanging. Never raises: a body-read failure must
+        not kill the crawl.
+        """
+        box: dict[str, object] = {}
+
+        def _read() -> None:
+            chunks: list[bytes] = []
+            total = 0
+            note = ""
+            try:
+                # Lenient length enforcement: a server that declares
+                # Content-Length: N but closes after fewer bytes should yield
+                # those bytes, not an IncompleteRead that discards them. (A
+                # shortfall is still reported below via the header check.)
+                try:
+                    res.raw.enforce_content_length = False
+                except Exception:
+                    pass
+                for chunk in res.iter_content(chunk_size=65536):
+                    chunks.append(chunk)
+                    total += len(chunk)
+                    if total >= self.MAX_BODY_BYTES:
+                        note = (f"response body exceeded "
+                                f"{self.MAX_BODY_BYTES:,} bytes; truncated")
+                        break
+            except Exception as exc:
+                # Mid-body failure (connection reset, ...): keep what
+                # arrived; partial content still feeds the passive modules.
+                note = (f"response body read failed after {total:,} "
+                        f"byte(s): {exc}")
+            box["chunks"] = chunks
+            box["note"] = note
+
+        reader = threading.Thread(target=_read, daemon=True)
+        reader.start()
+        reader.join(max(0.0, self.read_deadline))
+        if reader.is_alive():
+            # Deadline hit while a read() is still blocked. Shut the socket
+            # down for reading: this wakes the reader's blocked recv()
+            # promptly. (A cross-thread res.close() instead blocks on the
+            # BufferedReader lock held by the in-flight read — the exact
+            # hang this deadline exists to fix.)
+            try:
+                shutdown = getattr(res.raw, "shutdown", None)
+                if shutdown is not None:
+                    shutdown()
+            except Exception:
+                pass
+            reader.join(self.timeout + 1.0)
+            chunks = box.get("chunks", [])
+            total = sum(len(c) for c in chunks)
+            note = (f"response body read exceeded the {self.read_deadline:g}s "
+                    f"deadline; kept {total:,} byte(s) received so far")
+        else:
+            # .get with defaults: even if the reader thread died to a
+            # BaseException (not caught by `except Exception` above), the
+            # crawl must not die with it.
+            chunks = box.get("chunks", [])
+            note = box.get("note", "")
+        if note:
+            # Truncated or failed read: the socket may still hold unread
+            # data, so close it outright instead of handing a dirty
+            # connection back to the pool.
+            try:
+                res.raw.close()
+            except Exception:
+                pass
+        # Populate the cache requests normally fills, so .content/.text
+        # behave exactly as before for every module.
+        res._content = b"".join(chunks)
+        res._content_consumed = True
+        if not note:
+            # With lenient length enforcement a short body no longer raises;
+            # report the shortfall explicitly so truncated pages are visible
+            # instead of silently feeding partial content to the modules.
+            declared = (res.headers.get("Content-Length") or "").strip()
+            if declared.isdigit() and int(declared) > len(res._content):
+                note = (f"server closed the connection after "
+                        f"{len(res._content):,} of {int(declared):,} "
+                        f"declared byte(s)")
+        res.close()
+        if note and not quiet:
+            self.errors.append(f"{method} {url}: {note}")
         return res
 
     def _crawl(self) -> None:
