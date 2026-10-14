@@ -40,6 +40,18 @@ class MultiVectorInjectionModule(BaseModule):
             "ldap_search",
             "Invalid DN syntax",
             "Protocol error occurred",
+            # Vendor / stack-specific error strings (LDAP-001 coverage expansion):
+            "com.novell.ldap",               # Novell eDirectory Java SDK stack traces
+            "LdapErr: DSID",                 # Active Directory DSID error blob
+            "80090308",                      # AD "supplied credential is invalid" code
+            "org.springframework.ldap",      # Spring LDAP (Java)
+            "Invalid search filter",         # generic LDAP stack-trace wording
+            "Bad search filter",             # LDAP result code 18 wording
+            "Net::LDAP",                     # Perl LDAP module error pages
+            "LDAPFilterSyntaxError",         # python-ldap malformed-filter exception
+            "DirectoryServicesCOMException", # .NET System.DirectoryServices
+            "Invalid attribute syntax",      # LDAP result code 21 wording
+            "Server is unwilling to perform",# LDAP result code 53 wording
         ]
 
         baseline = self._send(url, param, method, "ldap_baseline_xploit", base_data)

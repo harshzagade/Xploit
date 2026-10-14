@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+- LDAP injection error-pattern coverage expanded (2026-10-14): 11 new
+  vendor/stack-specific error strings in `MultiVectorInjectionModule` —
+  `com.novell.ldap` (eDirectory SDK), `LdapErr: DSID` + `80090308`
+  (Active Directory), `org.springframework.ldap`, `Net::LDAP` (Perl),
+  `LDAPFilterSyntaxError` (python-ldap), `DirectoryServicesCOMException`
+  (.NET), `Invalid search filter` / `Bad search filter` / `Invalid attribute
+  syntax` / `Server is unwilling to perform` (LDAP result-code wording);
+  `tests/test_ldap_patterns.py` (37 tests) covers trigger, evidence,
+  case-insensitivity, baseline exclusion and no-regression on old patterns.
+
 ### Docs
 - README: added 4 real terminal captures (`assets/screenshots/`, 2026-10-06) —
   banner, live findings with `✓ verified` / `○ unverified` evidence gating,
