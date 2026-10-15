@@ -68,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
                         help="add up to N extra random seconds between requests "
                              "(smooths request timing; default: 0)")
     parser.add_argument("--scope-prefix", default="/", help="restrict crawling/checks to a path prefix")
+    parser.add_argument("--threads", type=int, default=5,
+                        help="concurrent crawler workers (default: 5; raise for faster "
+                             "crawls on responsive targets)")
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                         help="skip crawling URLs matching PATTERN (Python regex, matched against "
                              "the full URL); may be repeated")
@@ -123,6 +126,7 @@ def run_scan(args: argparse.Namespace) -> int:
             jitter=args.jitter,
             scope_prefix=args.scope_prefix,
             exclude=args.exclude,
+            threads=args.threads,
             verify=not args.insecure,
         )
     except ValueError as exc:
@@ -289,6 +293,7 @@ def build_interactive_args(input_fn=input) -> argparse.Namespace:
         no_color=False,
         quiet=False,
         min_severity="MEDIUM",
+        threads=5,
     )
 
 def apply_request_overrides(scanner: WebScanner, headers: list[str], cookies: list[str]) -> None:

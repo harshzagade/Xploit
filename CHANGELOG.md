@@ -9,6 +9,8 @@
   one-liners in the final report instead of full detail blocks. The JSON
   report still carries every finding, so nothing is lost. `tests/test_min_severity.py`
   (13 tests) covers the threshold ordering, report collapsing, and CLI wiring.
+- `--threads N` (default 5): exposes the crawler's worker count on the CLI —
+  raise it for faster crawls on responsive targets.
 - LDAP injection error-pattern coverage expanded (2026-10-14): 11 new
   vendor/stack-specific error strings in `MultiVectorInjectionModule` —
   `com.novell.ldap` (eDirectory SDK), `LdapErr: DSID` + `80090308`

@@ -303,6 +303,8 @@ options:
                         (smooths request timing; default: 0)
   --scope-prefix SCOPE_PREFIX
                         restrict crawling to a path prefix
+  --threads THREADS     concurrent crawler workers (default: 5; raise for
+                        faster crawls on responsive targets)
   --exclude PATTERN     skip crawling URLs matching PATTERN (Python regex,
                         matched against the full URL); may be repeated
   --format {text,json}  output format

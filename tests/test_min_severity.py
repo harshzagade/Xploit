@@ -133,3 +133,19 @@ def test_finding_visible_gate():
     assert not finding_visible(make_finding(severity=INFO), "MEDIUM")
     assert finding_visible(make_finding(severity=LOW), "LOW")
     assert finding_visible(make_finding(severity=INFO), "INFO")
+
+
+# --- --threads ---------------------------------------------------------------
+
+def test_parser_threads_defaults_to_5():
+    assert build_parser().parse_args(["http://x/"]).threads == 5
+
+
+def test_parser_threads_accepts_custom_value():
+    assert build_parser().parse_args(["http://x/", "--threads", "20"]).threads == 20
+
+
+def test_scanner_threads_clamped_to_at_least_one():
+    from xploit.scanner import WebScanner
+    assert WebScanner("http://example.com/", threads=0).threads == 1
+    assert WebScanner("http://example.com/", threads=20).threads == 20
