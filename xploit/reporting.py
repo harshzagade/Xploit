@@ -16,6 +16,17 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub("", text)
 
 
+# Severity ordering for display filtering (--min-severity). Lower rank =
+# more severe. Unknown severities sort last so they are never silently
+# promoted above the threshold.
+_SEV_RANK = {"HIGH": 0, "MEDIUM": 1, "LOW": 2, "INFO": 3}
+
+
+def meets_severity(severity: str, minimum: str) -> bool:
+    """True when `severity` is at or above the `minimum` severity threshold."""
+    return _SEV_RANK.get(severity, 9) <= _SEV_RANK.get(minimum, 9)
+
+
 # Any ANSI/VT100 escape sequence (broader than the SGR-only _ANSI_RE above):
 # OSC ... BEL/ST, CSI ... final byte, charset designations, other Fe escapes.
 _ESCAPE_RE = re.compile(
@@ -41,7 +52,15 @@ def sanitize_terminal(text: str) -> str:
     return _C0_RE.sub("", _ESCAPE_RE.sub("", text))
 
 
-def render_text_report(result: ScanResult, colors: bool = True) -> str:
+def render_text_report(result: ScanResult, colors: bool = True,
+                       min_severity: str = "MEDIUM") -> str:
+    """Render the human-readable report.
+
+    Findings at or above `min_severity` get full detail blocks; anything
+    below is collapsed to a compact one-line list at the end so the report
+    stays focused on what matters. The JSON report always carries every
+    finding — nothing is lost, only the terminal noise is reduced.
+    """
     BOLD   = "\033[1m"  if colors else ""
     RESET  = "\033[0m"  if colors else ""
     DIM    = "\033[2m"  if colors else ""
@@ -118,7 +137,11 @@ def render_text_report(result: ScanResult, colors: bool = True) -> str:
         return "\n".join(lines)
 
     # ── Findings grouped by severity ─────────────────────────────────────
-    sorted_findings = sorted(result.findings, key=_finding_sort_key)
+    # Below-threshold findings are collapsed to one-liners at the end —
+    # the terminal shows what matters, the JSON report keeps everything.
+    main_findings   = [f for f in result.findings if meets_severity(f.severity, min_severity)]
+    hidden_findings = [f for f in result.findings if not meets_severity(f.severity, min_severity)]
+    sorted_findings = sorted(main_findings, key=_finding_sort_key)
     current_sev     = None
     idx             = 0
 
@@ -163,6 +186,23 @@ def render_text_report(result: ScanResult, colors: bool = True) -> str:
         ]):
             lines.append(line)
 
+        lines.append("")
+
+    if hidden_findings:
+        lines.append("")
+        cnt = len(hidden_findings)
+        what = "finding" if cnt == 1 else "findings"
+        label = f" {DIM}LOWER SEVERITY ({cnt} {what} below --min-severity {min_severity}){RESET} "
+        label_plain = f" LOWER SEVERITY ({cnt} {what} below --min-severity {min_severity}) "
+        pad = "─" * max(0, box_w + 2 - len(label_plain) - 4)
+        lines.append(f"───{label}{pad}───")
+        lines.append("")
+        for finding in sorted(hidden_findings, key=_finding_sort_key):
+            col = SEV_COLOR.get(finding.severity, "")
+            short_url = sanitize_terminal(finding.url).replace("https://", "").replace("http://", "")
+            param = f"  {DIM}· param: {sanitize_terminal(finding.parameter)}{RESET}" if finding.parameter else ""
+            lines.append(f"  {col}{finding.severity:<6}{RESET}  {sanitize_terminal(finding.name)}"
+                         f"  {DIM}— {short_url}{RESET}{param}")
         lines.append("")
 
     lines.append("─" * (box_w + 2))

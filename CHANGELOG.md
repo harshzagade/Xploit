@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- `--min-severity {HIGH,MEDIUM,LOW,INFO}` (default MEDIUM): live output and
+  the text report now show only findings at or above the threshold — below
+  it, findings are counted silently during the scan and collapse to compact
+  one-liners in the final report instead of full detail blocks. The JSON
+  report still carries every finding, so nothing is lost. `tests/test_min_severity.py`
+  (13 tests) covers the threshold ordering, report collapsing, and CLI wiring.
 - LDAP injection error-pattern coverage expanded (2026-10-14): 11 new
   vendor/stack-specific error strings in `MultiVectorInjectionModule` —
   `com.novell.ldap` (eDirectory SDK), `LdapErr: DSID` + `80090308`

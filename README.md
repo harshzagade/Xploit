@@ -315,6 +315,10 @@ options:
   --insecure            disable SSL certificate verification
   --no-color            disable ANSI colors
   --quiet               suppress banner and progress output
+  --min-severity {HIGH,MEDIUM,LOW,INFO}
+                        only show findings at or above this severity in live
+                        output and the text report (LOW/INFO collapse to
+                        one-liners; default: MEDIUM)
 ```
 
 ---

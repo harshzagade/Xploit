@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 
 from . import __version__
-from .reporting import render_json_report
+from .reporting import render_json_report, meets_severity
 from .scanner import ACTIVE, FULL, PASSIVE, HIGH, Finding, ScanResult, WebScanner, summarize_findings
 
 
@@ -79,6 +79,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--insecure", action="store_true", help="disable SSL certificate verification")
     parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     parser.add_argument("--quiet", action="store_true", help="suppress banner and progress output")
+    parser.add_argument("--min-severity", choices=("HIGH", "MEDIUM", "LOW", "INFO"), default="MEDIUM",
+                        help="only show findings at or above this severity in live output and the "
+                             "text report (LOW/INFO collapse to one-liners; default: MEDIUM)")
     return parser
 
 def main(argv: list[str] | None = None) -> int:
@@ -89,6 +92,13 @@ def main(argv: list[str] | None = None) -> int:
     
     args = build_parser().parse_args(argv)
     return run_scan(args)
+
+def finding_visible(finding: Finding, min_severity: str) -> bool:
+    """Live-output gate: only findings at/above the threshold print during
+    the scan. Below-threshold findings are still counted in the progress
+    bar and collapsed to one-liners in the final report."""
+    return meets_severity(finding.severity, min_severity)
+
 
 def run_scan(args: argparse.Namespace) -> int:
     colors = not args.no_color
@@ -178,6 +188,8 @@ def run_scan(args: argparse.Namespace) -> int:
     def finding_callback(finding: Finding):
         with _ui_lock:
             _ui_state["findings"] += 1
+            if not finding_visible(finding, args.min_severity):
+                return  # below threshold: counted, not printed
             if colors:
                 sys.stdout.write("\r\033[K")
             else:
@@ -231,7 +243,8 @@ def run_scan(args: argparse.Namespace) -> int:
         content = render_json_report(result)
     else:
         from .reporting import render_text_report
-        content = render_text_report(result, colors=colors)
+        content = render_text_report(result, colors=colors,
+                                     min_severity=args.min_severity)
 
     if args.output:
         from .reporting import strip_ansi, write_report
@@ -275,6 +288,7 @@ def build_interactive_args(input_fn=input) -> argparse.Namespace:
         insecure=False,
         no_color=False,
         quiet=False,
+        min_severity="MEDIUM",
     )
 
 def apply_request_overrides(scanner: WebScanner, headers: list[str], cookies: list[str]) -> None:
