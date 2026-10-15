@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import json
 import sys
 import threading
 import time
@@ -53,12 +55,15 @@ def banner(colors: bool = True) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="xploit",
-        usage="xploit <url> [options]",
+        usage="xploit <url> [url ...] [options]",
         description="Xploit CLI web vulnerability scanner.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("-v", "--version", action="version", version=f"Xploit {__version__}")
     parser.add_argument("url", help="target URL (e.g., https://example.com)")
+    parser.add_argument("extra_urls", nargs="*", metavar="url",
+                        help="additional target URLs — all targets are scanned "
+                             "concurrently in one run")
     parser.add_argument("--depth", type=int, default=4, help="crawl depth (default: 4)")
     parser.add_argument("--max-pages", type=int, default=500, help="maximum pages to crawl (default: 500)")
     parser.add_argument("--timeout", type=float, default=6.0, help="HTTP timeout per request in seconds (default: 6)")
@@ -69,8 +74,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "(smooths request timing; default: 0)")
     parser.add_argument("--scope-prefix", default="/", help="restrict crawling/checks to a path prefix")
     parser.add_argument("--threads", type=int, default=5,
-                        help="concurrent crawler workers (default: 5; raise for faster "
-                             "crawls on responsive targets)")
+                        help="concurrency for crawling and probe requests "
+                             "(default: 5; raise for faster scans on responsive "
+                             "targets)")
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                         help="skip crawling URLs matching PATTERN (Python regex, matched against "
                              "the full URL); may be repeated")
@@ -103,37 +109,181 @@ def finding_visible(finding: Finding, min_severity: str) -> bool:
     return meets_severity(finding.severity, min_severity)
 
 
+def target_list(args: argparse.Namespace) -> list[str]:
+    """All scan targets: the positional URL plus any extra URLs."""
+    return [args.url] + list(getattr(args, "extra_urls", None) or [])
+
+
+def _build_scanner(args: argparse.Namespace, target_url: str) -> WebScanner:
+    """Construct a configured WebScanner. Raises ValueError on bad input."""
+    scanner = WebScanner(
+        target_url,
+        depth=args.depth,
+        max_pages=args.max_pages,
+        timeout=args.timeout,
+        mode=args.mode,
+        rate_limit=args.rate_limit,
+        jitter=args.jitter,
+        scope_prefix=args.scope_prefix,
+        exclude=args.exclude,
+        threads=args.threads,
+        verify=not args.insecure,
+    )
+    apply_request_overrides(scanner, args.header, args.cookie)
+    return scanner
+
+
+def _retest_if_requested(args: argparse.Namespace, scanner: WebScanner,
+                         result: ScanResult, colors: bool, show_ui: bool) -> None:
+    if not args.retest:
+        return
+    from .retest import retest_findings, retest_summary_line
+    # Unwire the live progress tick: retest replay requests would otherwise
+    # redraw the bar at 100% still labeled "Checks complete".
+    scanner.on_request = None
+    stats = retest_findings(scanner, result.findings)
+    if show_ui:
+        print(color(retest_summary_line(stats), "MEDIUM", colors))
+
+
+def _error_result(target: str, status: str) -> ScanResult:
+    """Placeholder result for a target that could not be scanned."""
+    return ScanResult(
+        target=target, normalized_target=target, started_at="",
+        duration_seconds=0.0, status=status, scan_mode="",
+        scope_prefix="/", completion_percent=0, checks_run=[],
+        pages_seen=[], forms_seen=0, findings=[],
+        errors=[f"target {status}: {target}"],
+    )
+
+
+def _write_output(args: argparse.Namespace, content: str, colors: bool) -> None:
+    if args.output:
+        from .reporting import strip_ansi, write_report
+        # ANSI stripping is for human-readable text only — JSON evidence may
+        # legitimately contain "\\x1b[<nums>m"-shaped sequences that must not
+        # be silently deleted from the saved report.
+        write_report(strip_ansi(content) if args.format == "text" else content,
+                     args.output)
+        if not args.quiet:
+            # stderr, not stdout: keeps piped --format json output parseable.
+            print(f"report written to {args.output}", file=sys.stderr)
+    else:
+        print(content)
+
+
 def run_scan(args: argparse.Namespace) -> int:
+    targets = target_list(args)
+    if len(targets) == 1:
+        return _run_single_target(args, targets[0])
+    return _run_multi_target(args, targets)
+
+
+def _run_multi_target(args: argparse.Namespace, targets: list[str]) -> int:
+    """Scan several targets concurrently, one ScanResult per target.
+
+    The animated single-scan progress bar cannot represent N concurrent
+    scans, so multi-target mode uses line-based status: one line per
+    target start/finish, findings printed live tagged with their target.
+    """
+    colors = not args.no_color
+    show_ui = not args.quiet and args.format == "text"
+    _lock = threading.Lock()
+
+    def _short(target: str) -> str:
+        return target.replace("https://", "").replace("http://", "").rstrip("/")
+
+    if show_ui:
+        print(banner(colors))
+        _d = DIM if colors else ""
+        _r = RESET if colors else ""
+        print(f"  {_d}{len(targets)} targets · {args.mode} · "
+              f"{args.threads} threads each{_r}")
+        print("")
+
+    def _scan_target(target: str) -> ScanResult:
+        if show_ui:
+            with _lock:
+                print(f"  {color('[+]', 'OK', colors)} {_short(target)} — starting")
+        try:
+            scanner = _build_scanner(args, target)
+        except ValueError as exc:
+            with _lock:
+                print(color(f"  [!] {_short(target)}: error: {exc}", HIGH, colors))
+            return _error_result(target, "invalid")
+        if show_ui:
+            def on_finding(finding: Finding):
+                if not finding_visible(finding, args.min_severity):
+                    return
+                with _lock:
+                    _col = COLORS.get(finding.severity, "") if colors else ""
+                    _rst = RESET if colors else ""
+                    _b = BOLD if colors else ""
+                    print(f"  {_col}▌{_rst} [{_short(target)}] "
+                          f"{_col}{_b}{finding.severity:<6}{_rst} {_b}{finding.name}{_rst}")
+            scanner.on_finding = on_finding
+        try:
+            result = scanner.scan()
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:  # one bad target must not kill the others
+            with _lock:
+                print(color(f"  [!] {_short(target)}: scan failed: {exc}", HIGH, colors))
+            return _error_result(target, "error")
+        _retest_if_requested(args, scanner, result, colors, show_ui)
+        if show_ui:
+            with _lock:
+                summary = summarize_findings(result.findings)
+                parts = ", ".join(f"{n} {s}" for s, n in summary.items() if n)
+                detail = f" ({parts})" if parts else ""
+                print(f"  {color('[ok]', 'OK', colors)} {_short(target)} — done: "
+                      f"{len(result.findings)} findings{detail} "
+                      f"in {result.duration_seconds:g}s")
+        return result
+
+    workers = max(1, min(len(targets), args.threads))
+    executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=workers, thread_name_prefix="xploit-target")
+    try:
+        # executor.map preserves target order for the results list.
+        ordered = list(executor.map(_scan_target, targets))
+    except KeyboardInterrupt:
+        executor.shutdown(wait=False, cancel_futures=True)
+        print(color("\nscan interrupted", "MEDIUM", colors), file=sys.stderr)
+        return 130
+    executor.shutdown(wait=True)
+
+    if args.format == "json":
+        content = json.dumps([r.to_dict() for r in ordered],
+                             indent=2, sort_keys=True)
+    else:
+        from .reporting import render_text_report
+        content = "\n\n".join(
+            render_text_report(r, colors=colors,
+                               min_severity=args.min_severity)
+            for r in ordered)
+    _write_output(args, content, colors)
+
+    if any(r.status in ("unreachable", "invalid", "error") for r in ordered):
+        return 2
+    return 1 if any(summarize_findings(r.findings).get(HIGH, 0)
+                     for r in ordered) else 0
+
+
+def _run_single_target(args: argparse.Namespace, target_url: str) -> int:
     colors = not args.no_color
     if not args.quiet and args.format == "text":
         print(banner(colors))
         _d = DIM if colors else ""
         _r = RESET if colors else ""
         _b = BOLD if colors else ""
-        print(f"  {_d}target{_r}  {_b}{args.url}{_r}")
+        print(f"  {_d}target{_r}  {_b}{target_url}{_r}")
         print(f"  {_d}mode{_r}    {args.mode} · depth {args.depth} · "
               f"{args.max_pages} pages · {args.timeout:g}s timeout")
         print("")
 
     try:
-        scanner = WebScanner(
-            args.url,
-            depth=args.depth,
-            max_pages=args.max_pages,
-            timeout=args.timeout,
-            mode=args.mode,
-            rate_limit=args.rate_limit,
-            jitter=args.jitter,
-            scope_prefix=args.scope_prefix,
-            exclude=args.exclude,
-            threads=args.threads,
-            verify=not args.insecure,
-        )
-    except ValueError as exc:
-        print(color(f"error: {exc}", HIGH, colors), file=sys.stderr)
-        return 2
-    try:
-        apply_request_overrides(scanner, args.header, args.cookie)
+        scanner = _build_scanner(args, target_url)
     except ValueError as exc:
         print(color(f"error: {exc}", HIGH, colors), file=sys.stderr)
         return 2
@@ -234,14 +384,8 @@ def run_scan(args: argparse.Namespace) -> int:
         print(color("\nscan interrupted", "MEDIUM", colors), file=sys.stderr)
         return 130
 
-    if args.retest:
-        from .retest import retest_findings, retest_summary_line
-        # Unwire the live progress tick: retest replay requests would otherwise
-        # redraw the bar at 100% still labeled "Checks complete".
-        scanner.on_request = None
-        stats = retest_findings(scanner, result.findings)
-        if not args.quiet and args.format == "text":
-            print(color(retest_summary_line(stats), "MEDIUM", colors))
+    _retest_if_requested(args, scanner, result, colors,
+                         show_ui=not args.quiet and args.format == "text")
 
     if args.format == "json":
         content = render_json_report(result)
@@ -249,19 +393,8 @@ def run_scan(args: argparse.Namespace) -> int:
         from .reporting import render_text_report
         content = render_text_report(result, colors=colors,
                                      min_severity=args.min_severity)
+    _write_output(args, content, colors)
 
-    if args.output:
-        from .reporting import strip_ansi, write_report
-        # ANSI stripping is for human-readable text only — JSON evidence may
-        # legitimately contain "\x1b[<nums>m"-shaped sequences that must not
-        # be silently deleted from the saved report.
-        write_report(strip_ansi(content) if args.format == "text" else content,
-                     args.output)
-        if not args.quiet:
-            # stderr, not stdout: keeps piped --format json output parseable.
-            print(f"report written to {args.output}", file=sys.stderr)
-    else:
-        print(content)
     if result.status == "unreachable":
         return 2
     return 1 if summarize_findings(result.findings).get(HIGH, 0) else 0
@@ -294,6 +427,7 @@ def build_interactive_args(input_fn=input) -> argparse.Namespace:
         quiet=False,
         min_severity="MEDIUM",
         threads=5,
+        extra_urls=[],
     )
 
 def apply_request_overrides(scanner: WebScanner, headers: list[str], cookies: list[str]) -> None:

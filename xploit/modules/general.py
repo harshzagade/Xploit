@@ -210,39 +210,49 @@ class GeneralModule(BaseModule):
         origin = "https://evil.example"
         # One probe per path shape — the crawler stores /item?id=1 and
         # /item?id=2 as separate pages, but CORS policy is per endpoint.
+        # Shapes are filtered sequentially first (cheap, deterministic),
+        # then the actual probes fan out concurrently.
         seen_shapes: set[str] = set()
+        probe_urls: list[str] = []
         for url in self.scanner.pages:
             shape = normalize_path(url)
             if shape in seen_shapes:
                 continue
             seen_shapes.add(shape)
-            res = self.scanner._request("GET", url, headers={"Origin": origin})
-            if not res: continue
-            acao = res.headers.get("Access-Control-Allow-Origin")
-            if not acao:
-                continue
-            allow_creds = res.headers.get("Access-Control-Allow-Credentials", "").strip().lower() == "true"
-            reflected = acao == origin
-            if reflected and allow_creds:
-                # Worst case: attacker origin whitelisted WITH credentials.
-                severity, confidence = HIGH, "High"
-                evidence = f"Origin {origin} reflected with Access-Control-Allow-Credentials: true"
-                impact = "Any site can make credentialed cross-origin requests and read the responses, exposing session data to attackers."
-            elif acao == "*":
-                # Bare wildcard without credentials: readable cross-origin but
-                # not with cookies — LOW, not MEDIUM.
-                severity, confidence = LOW, "Medium"
-                evidence = "Access-Control-Allow-Origin: *" + (" (with Allow-Credentials: true, which browsers ignore for '*')" if allow_creds else "")
-                impact = "Any origin can read non-credentialed cross-origin responses, which broadens data exposure for public endpoints."
-            elif reflected:
-                severity, confidence = MEDIUM, "Medium"
-                evidence = f"Origin {origin} reflected without Access-Control-Allow-Credentials"
-                impact = "Any origin is reflected, so non-credentialed cross-origin reads are permitted from attacker sites."
-            else:
-                continue
-            self.add_finding(Finding(
-                id="CORS-001", name="Permissive CORS Policy",
-                category="CORS Misconfiguration", severity=severity, confidence=confidence,
-                url=url, evidence=evidence, impact=impact,
-                remediation="Restrict Origin allowlist.", cwe="CWE-942"
-            ))
+            probe_urls.append(url)
+        self._cors_origin = origin
+        self.scanner.map_probes(self._check_cors_url, probe_urls)
+
+    def _check_cors_url(self, url):
+        origin = self._cors_origin
+        res = self.scanner._request("GET", url, headers={"Origin": origin})
+        if not res:
+            return
+        acao = res.headers.get("Access-Control-Allow-Origin")
+        if not acao:
+            return
+        allow_creds = res.headers.get("Access-Control-Allow-Credentials", "").strip().lower() == "true"
+        reflected = acao == origin
+        if reflected and allow_creds:
+            # Worst case: attacker origin whitelisted WITH credentials.
+            severity, confidence = HIGH, "High"
+            evidence = f"Origin {origin} reflected with Access-Control-Allow-Credentials: true"
+            impact = "Any site can make credentialed cross-origin requests and read the responses, exposing session data to attackers."
+        elif acao == "*":
+            # Bare wildcard without credentials: readable cross-origin but
+            # not with cookies — LOW, not MEDIUM.
+            severity, confidence = LOW, "Medium"
+            evidence = "Access-Control-Allow-Origin: *" + (" (with Allow-Credentials: true, which browsers ignore for '*')" if allow_creds else "")
+            impact = "Any origin can read non-credentialed cross-origin responses, which broadens data exposure for public endpoints."
+        elif reflected:
+            severity, confidence = MEDIUM, "Medium"
+            evidence = f"Origin {origin} reflected without Access-Control-Allow-Credentials"
+            impact = "Any origin is reflected, so non-credentialed cross-origin reads are permitted from attacker sites."
+        else:
+            return
+        self.add_finding(Finding(
+            id="CORS-001", name="Permissive CORS Policy",
+            category="CORS Misconfiguration", severity=severity, confidence=confidence,
+            url=url, evidence=evidence, impact=impact,
+            remediation="Restrict Origin allowlist.", cwe="CWE-942"
+        ))

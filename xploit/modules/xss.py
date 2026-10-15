@@ -50,11 +50,23 @@ class XSSModule(BaseModule):
             '<audio src=x onerror=alert(1)>',          # media-tag onerror carrier
             '<img src=x\tonerror=alert(1)>',           # tab separator vs space-based filters
         ]
-        for payload in payloads:
-            for url in list(self.scanner.pages):
-                self._check_url(url, payload)
-            for form in self.scanner.forms:
-                self._check_form(form, payload)
+        items = (
+            [("url", payload, url)
+             for payload in payloads for url in list(self.scanner.pages)] +
+            [("form", payload, form)
+             for payload in payloads for form in self.scanner.forms]
+        )
+        # Same nesting order as the old sequential loops, so finding order
+        # is unchanged; the _confirmed set plus the scanner-level dedupe keep
+        # one finding per vulnerable parameter even when two payloads race.
+        self.scanner.map_probes(self._check_item, items)
+
+    def _check_item(self, item):
+        kind, payload, target = item
+        if kind == "url":
+            self._check_url(target, payload)
+        else:
+            self._check_form(target, payload)
 
     @staticmethod
     def _base_url(url: str) -> str:

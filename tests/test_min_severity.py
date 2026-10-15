@@ -149,3 +149,84 @@ def test_scanner_threads_clamped_to_at_least_one():
     from xploit.scanner import WebScanner
     assert WebScanner("http://example.com/", threads=0).threads == 1
     assert WebScanner("http://example.com/", threads=20).threads == 20
+
+
+# --- map_probes concurrency ---------------------------------------------------
+
+def _make_scanner(threads=4):
+    from xploit.scanner import WebScanner
+    return WebScanner("http://example.com/", threads=threads)
+
+
+def test_map_probes_runs_all_items():
+    s = _make_scanner()
+    seen = []
+    s.map_probes(seen.append, [1, 2, 3, 4, 5])
+    assert sorted(seen) == [1, 2, 3, 4, 5]
+
+
+def test_map_probes_empty_is_noop():
+    s = _make_scanner()
+    s.map_probes(lambda x: 1 / 0, [])
+
+
+def test_map_probes_records_item_errors_not_raise():
+    s = _make_scanner()
+
+    def boom(x):
+        raise ValueError("bad item")
+
+    s.map_probes(boom, ["a", "b"])
+    assert len(s.errors) == 2
+    assert all("bad item" in e for e in s.errors)
+
+
+def test_map_probes_inline_when_threads_is_1():
+    s = _make_scanner(threads=1)
+    order = []
+    s.map_probes(order.append, [1, 2, 3])
+    assert order == [1, 2, 3]
+
+
+def test_map_probes_respects_thread_limit():
+    import threading
+    s = _make_scanner(threads=2)
+    live = 0
+    peak = 0
+    lock = threading.Lock()
+
+    def work(x):
+        nonlocal live, peak
+        with lock:
+            live += 1
+            peak = max(peak, live)
+        import time
+        time.sleep(0.05)
+        with lock:
+            live -= 1
+
+    s.map_probes(work, range(8))
+    assert peak <= 2
+    assert peak > 1  # actually ran concurrently
+
+
+def test_add_finding_dedupes_concurrent_duplicates():
+    import threading
+    from xploit.modules.base import BaseModule
+    from xploit.scanner import Finding
+
+    s = _make_scanner(threads=8)
+    mod = BaseModule(s)
+
+    def mk():
+        return Finding(id="X-1", name="Dup", category="C", severity="HIGH",
+                       confidence="High", url="http://x/", evidence="e",
+                       impact="i", remediation="r", parameter="p")
+
+    threads = [threading.Thread(target=lambda: mod.add_finding(mk()))
+               for _ in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(s.findings) == 1

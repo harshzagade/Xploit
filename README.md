@@ -284,10 +284,12 @@ Real scan output from Xploit v1.6.0 against a local deliberately-vulnerable test
 ## 🔧 CLI Options
 
 ```bash
-usage: xploit <url> [options]
+usage: xploit <url> [url ...] [options]
 
 positional arguments:
   url                   target URL (e.g., https://example.com)
+  url                   additional target URLs — all targets are scanned
+                        concurrently in one run
 
 options:
   -h, --help            show this help message and exit

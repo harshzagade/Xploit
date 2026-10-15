@@ -831,6 +831,42 @@ class WebScanner:
         """True when any --exclude pattern matches the full URL."""
         return any(rx.search(url) for rx in self._exclude_res)
 
+    def map_probes(self, func, items):
+        """Run func(item) for every item concurrently, in input order.
+
+        Probe requests are I/O-bound, so a thread pool sized by --threads
+        (default 5) collapses the sequential probe phase dramatically —
+        modules that fired hundreds of back-to-back requests now fan out.
+        Findings still flow through BaseModule.add_finding, which serializes
+        the dedupe check under the scanner lock, so finding order stays
+        deterministic for a fixed input order. Per-item exceptions are
+        recorded in self.errors (never raised), mirroring the module-level
+        crash guard in scan(). With a single item or threads <= 1 the work
+        runs inline: no pool overhead, fully deterministic for tests.
+        """
+        items = list(items)
+        if not items:
+            return
+        if self.threads <= 1 or len(items) == 1:
+            for item in items:
+                self._guarded_probe(func, item)
+            return
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.threads,
+                thread_name_prefix="xploit-probe") as executor:
+            futures = [executor.submit(self._guarded_probe, func, item)
+                       for item in items]
+            for future in futures:
+                future.result()
+
+    def _guarded_probe(self, func, item):
+        try:
+            func(item)
+        except Exception as exc:
+            with self._lock:
+                self.errors.append(
+                    f"Probe {getattr(func, '__name__', repr(func))} failed: {exc}")
+
     def _respect_rate_limit(self):
         if self.rate_limit <= 0 and self.jitter <= 0: return
         # Reserve the next slot under the lock so concurrent crawler threads

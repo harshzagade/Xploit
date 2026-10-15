@@ -120,10 +120,8 @@ class ExposureModule(BaseModule):
         # object ID, request the original, then probe adjacent IDs (+1, -1, +2, -2).
         # A confirmed IDOR is when an adjacent ID returns a substantially different
         # successful response — meaning the server returned a different object.
-        for url in list(self.scanner.pages):
-            self._test_idor_url(url)
-        for form in self.scanner.forms:
-            self._test_idor_form(form)
+        self.scanner.map_probes(self._test_idor_url, list(self.scanner.pages))
+        self.scanner.map_probes(self._test_idor_form, list(self.scanner.forms))
 
     def _test_idor_url(self, url: str) -> None:
         parsed = urlparse(url)
@@ -243,33 +241,39 @@ class ExposureModule(BaseModule):
         baseline_res = self.scanner._request("GET", baseline_target, allow_redirects=False)
         baseline_len = len(baseline_res.text) if baseline_res and baseline_res.status_code == 200 else -1
 
+        probe_targets = []
         for path, (pattern, name) in self.SENSITIVE_FILES.items():
             target = self._root_url(path)
             if not self.scanner._in_scope(target):
                 continue
-            response = self._probe_file(target)
-            if not response or response.status_code != 200:
-                continue
+            probe_targets.append((target, path, pattern, name, baseline_len))
+        self.scanner.map_probes(self._check_sensitive_target, probe_targets)
 
-            # Soft-404 guard: some apps return 200 for every path with a generic page.
-            # Use a wider tolerance (500 bytes) to account for encoding differences and
-            # minor template variations while still catching genuine content.
-            if baseline_len > 0 and abs(len(response.text) - baseline_len) < 500:
-                continue
+    def _check_sensitive_target(self, item) -> None:
+        target, path, pattern, name, baseline_len = item
+        response = self._probe_file(target)
+        if not response or response.status_code != 200:
+            return
 
-            if re.search(pattern, response.text[:20000]):
-                self.add_finding(Finding(
-                    id="DATA-001",
-                    name=name,
-                    category="Sensitive Data Exposure",
-                    severity=HIGH,
-                    confidence="High",
-                    url=target,
-                    evidence=f"Accessible {path} matched sensitive configuration signatures.",
-                    impact="Public configuration files can disclose credentials, repository metadata, or application secrets.",
-                    remediation="Remove the file from the web root, block sensitive paths at the server, and rotate any exposed secrets.",
-                    cwe="CWE-200",
-                ))
+        # Soft-404 guard: some apps return 200 for every path with a generic page.
+        # Use a wider tolerance (500 bytes) to account for encoding differences and
+        # minor template variations while still catching genuine content.
+        if baseline_len > 0 and abs(len(response.text) - baseline_len) < 500:
+            return
+
+        if re.search(pattern, response.text[:20000]):
+            self.add_finding(Finding(
+                id="DATA-001",
+                name=name,
+                category="Sensitive Data Exposure",
+                severity=HIGH,
+                confidence="High",
+                url=target,
+                evidence=f"Accessible {path} matched sensitive configuration signatures.",
+                impact="Public configuration files can disclose credentials, repository metadata, or application secrets.",
+                remediation="Remove the file from the web root, block sensitive paths at the server, and rotate any exposed secrets.",
+                cwe="CWE-200",
+            ))
 
     def _check_debug_endpoints(self) -> None:
         # Similar logic for debug endpoints
@@ -278,30 +282,36 @@ class ExposureModule(BaseModule):
         baseline_res = self.scanner._request("GET", baseline_target, allow_redirects=False)
         baseline_len = len(baseline_res.text) if baseline_res and baseline_res.status_code == 200 else -1
 
+        probe_targets = []
         for path, pattern in self.DEBUG_PATHS.items():
             target = self._root_url(path)
             if not self.scanner._in_scope(target):
                 continue
-            response = self._probe_file(target)
-            if not response or response.status_code != 200:
-                continue
+            probe_targets.append((target, path, pattern, baseline_len))
+        self.scanner.map_probes(self._check_debug_target, probe_targets)
 
-            if baseline_len > 0 and abs(len(response.text) - baseline_len) < 500:
-                continue
+    def _check_debug_target(self, item) -> None:
+        target, path, pattern, baseline_len = item
+        response = self._probe_file(target)
+        if not response or response.status_code != 200:
+            return
 
-            if re.search(pattern, response.text[:20000]):
-                self.add_finding(Finding(
-                    id="MISCFG-003",
-                    name="Exposed Diagnostic Endpoint",
-                    category="Security Misconfiguration",
-                    severity=HIGH,
-                    confidence="High",
-                    url=target,
-                    evidence=f"Diagnostic path {path} returned matching debug or runtime content.",
-                    impact="Diagnostic endpoints can disclose secrets, runtime state, stack traces, or operational details.",
-                    remediation="Disable public diagnostic endpoints or restrict them to authenticated administrators on trusted networks.",
-                    cwe="CWE-200",
-                ))
+        if baseline_len > 0 and abs(len(response.text) - baseline_len) < 500:
+            return
+
+        if re.search(pattern, response.text[:20000]):
+            self.add_finding(Finding(
+                id="MISCFG-003",
+                name="Exposed Diagnostic Endpoint",
+                category="Security Misconfiguration",
+                severity=HIGH,
+                confidence="High",
+                url=target,
+                evidence=f"Diagnostic path {path} returned matching debug or runtime content.",
+                impact="Diagnostic endpoints can disclose secrets, runtime state, stack traces, or operational details.",
+                remediation="Disable public diagnostic endpoints or restrict them to authenticated administrators on trusted networks.",
+                cwe="CWE-200",
+            ))
 
     def _root_url(self, path: str) -> str:
         parsed = urlparse(self.scanner.root)

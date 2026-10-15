@@ -30,17 +30,22 @@ class BaseModule:
         from ..scanner import gate_finding
         gate_finding(finding)
         key = (finding.category, finding.url, finding.parameter, finding.name)
-        if key not in self._dedupe:
-            self._dedupe.add(key)
-            # Scanner-level dedup across modules: skip if another module already
-            # reported this exact finding (same id, url, parameter).
-            xkey = (finding.id, finding.url, finding.parameter or "")
+        # Scanner-level dedup across modules: skip if another module already
+        # reported this exact finding (same id, url, parameter).
+        xkey = (finding.id, finding.url, finding.parameter or "")
+        # The probe phase fans out across threads (WebScanner.map_probes), so
+        # the dedupe check-and-add must be atomic — otherwise two threads can
+        # both pass the check and record the same finding twice.
+        with self.scanner._lock:
+            if key in self._dedupe:
+                return
             if xkey in self.scanner._finding_keys:
                 return
+            self._dedupe.add(key)
             self.scanner._finding_keys.add(xkey)
             self.scanner.findings.append(finding)
-            if self.scanner.on_finding:
-                self.scanner.on_finding(finding)
+        if self.scanner.on_finding:
+            self.scanner.on_finding(finding)
 
     def attach_proof(self, finding: "Finding", *, method: str, url: str,
                      marker: str = "", data: str = "",

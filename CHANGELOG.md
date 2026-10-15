@@ -11,6 +11,16 @@
   (13 tests) covers the threshold ordering, report collapsing, and CLI wiring.
 - `--threads N` (default 5): exposes the crawler's worker count on the CLI —
   raise it for faster crawls on responsive targets.
+- Concurrent probe fan-out: `WebScanner.map_probes()` runs each module's
+  per-target probes on the `--threads` pool instead of one-by-one — the
+  injection/XSS/exposure phases that used to fire hundreds of sequential
+  requests now overlap. Finding order stays deterministic via a locked
+  dedupe in `BaseModule.add_finding`; brute-force credential attempts stay
+  sequential on purpose (account-lockout safety).
+- Multi-target scans: `xploit <url> [url ...]` scans several targets
+  concurrently in one run (line-based per-target status, findings tagged by
+  target, one report per target; JSON mode emits an array). Exit code is 2
+  if any target failed, else 1 if any target has a HIGH finding.
 - LDAP injection error-pattern coverage expanded (2026-10-14): 11 new
   vendor/stack-specific error strings in `MultiVectorInjectionModule` —
   `com.novell.ldap` (eDirectory SDK), `LdapErr: DSID` + `80090308`

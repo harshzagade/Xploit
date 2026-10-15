@@ -48,27 +48,35 @@ class LogicVulnerabilityModule(BaseModule):
         REDIRECT_PARAMS = {"next", "url", "redirect", "return", "dest"}
         payload = "https://example.com/xploit-redirect"
         payload_netloc = urlparse(payload).netloc.lower()
-        for url in self.scanner.pages:
-            from ..scanner import query_parameters
-            for param in query_parameters(url):
-                if param.lower() in REDIRECT_PARAMS:
-                    test_url = mutate_query(url, param, payload)
-                    res = self.scanner._request("GET", test_url, allow_redirects=False)
-                    if res and res.status_code in (301, 302, 303, 307, 308):
-                        location = res.headers.get("Location", "")
-                        # Compare parsed netlocs instead of startswith: catches
-                        # protocol-relative destinations (//example.com/...) too,
-                        # and won't fire on relative-path redirects.
-                        try:
-                            loc_netloc = urlparse(location).netloc.lower()
-                        except ValueError:
-                            continue
-                        if loc_netloc and loc_netloc == payload_netloc:
-                            self.add_finding(Finding(
-                                id="REDIR-001", name="Open Redirect",
-                                category="Open Redirect", severity=HIGH, confidence="High",
-                                url=test_url, parameter=param,
-                                evidence=f"Redirects to external {location}",
-                                impact="The application accepts an external redirect destination, which enables phishing, redirect-chain abuse, and possible token forwarding to attacker-controlled sites.",
-                                remediation="Use relative redirects.", cwe="CWE-601"
-                            ))
+        self._redirect_params = REDIRECT_PARAMS
+        self._redirect_payload = payload
+        self._redirect_payload_netloc = payload_netloc
+        self.scanner.map_probes(self._check_open_redirect_url, list(self.scanner.pages))
+
+    def _check_open_redirect_url(self, url):
+        from ..scanner import query_parameters
+        REDIRECT_PARAMS = self._redirect_params
+        payload = self._redirect_payload
+        payload_netloc = self._redirect_payload_netloc
+        for param in query_parameters(url):
+            if param.lower() in REDIRECT_PARAMS:
+                test_url = mutate_query(url, param, payload)
+                res = self.scanner._request("GET", test_url, allow_redirects=False)
+                if res and res.status_code in (301, 302, 303, 307, 308):
+                    location = res.headers.get("Location", "")
+                    # Compare parsed netlocs instead of startswith: catches
+                    # protocol-relative destinations (//example.com/...) too,
+                    # and won't fire on relative-path redirects.
+                    try:
+                        loc_netloc = urlparse(location).netloc.lower()
+                    except ValueError:
+                        continue
+                    if loc_netloc and loc_netloc == payload_netloc:
+                        self.add_finding(Finding(
+                            id="REDIR-001", name="Open Redirect",
+                            category="Open Redirect", severity=HIGH, confidence="High",
+                            url=test_url, parameter=param,
+                            evidence=f"Redirects to external {location}",
+                            impact="The application accepts an external redirect destination, which enables phishing, redirect-chain abuse, and possible token forwarding to attacker-controlled sites.",
+                            remediation="Use relative redirects.", cwe="CWE-601"
+                        ))

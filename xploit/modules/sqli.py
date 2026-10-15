@@ -8,10 +8,11 @@ class SQLInjectionModule(BaseModule):
     category = "Injection"
 
     def run(self):
-        for url in list(self.scanner.pages):
-            self._check_url(url)
-        for form in self.scanner.forms:
-            self._check_form(form)
+        # Probe targets concurrently — requests are I/O-bound and each
+        # (url, param) chain is independent. Order of findings still follows
+        # the input order via the scanner's serialized dedupe.
+        self.scanner.map_probes(self._check_url, list(self.scanner.pages))
+        self.scanner.map_probes(self._check_form, list(self.scanner.forms))
 
     def _check_url(self, url):
         from urllib.parse import parse_qsl
