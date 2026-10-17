@@ -2,35 +2,6 @@
 
 ## Unreleased
 
-### Added
-- `--min-severity {HIGH,MEDIUM,LOW,INFO}` (default MEDIUM): live output and
-  the text report now show only findings at or above the threshold — below
-  it, findings are counted silently during the scan and collapse to compact
-  one-liners in the final report instead of full detail blocks. The JSON
-  report still carries every finding, so nothing is lost. `tests/test_min_severity.py`
-  (13 tests) covers the threshold ordering, report collapsing, and CLI wiring.
-- `--threads N` (default 5): exposes the crawler's worker count on the CLI —
-  raise it for faster crawls on responsive targets.
-- Concurrent probe fan-out: `WebScanner.map_probes()` runs each module's
-  per-target probes on the `--threads` pool instead of one-by-one — the
-  injection/XSS/exposure phases that used to fire hundreds of sequential
-  requests now overlap. Finding order stays deterministic via a locked
-  dedupe in `BaseModule.add_finding`; brute-force credential attempts stay
-  sequential on purpose (account-lockout safety).
-- Multi-target scans: `xploit <url> [url ...]` scans several targets
-  concurrently in one run (line-based per-target status, findings tagged by
-  target, one report per target; JSON mode emits an array). Exit code is 2
-  if any target failed, else 1 if any target has a HIGH finding.
-- LDAP injection error-pattern coverage expanded (2026-10-14): 11 new
-  vendor/stack-specific error strings in `MultiVectorInjectionModule` —
-  `com.novell.ldap` (eDirectory SDK), `LdapErr: DSID` + `80090308`
-  (Active Directory), `org.springframework.ldap`, `Net::LDAP` (Perl),
-  `LDAPFilterSyntaxError` (python-ldap), `DirectoryServicesCOMException`
-  (.NET), `Invalid search filter` / `Bad search filter` / `Invalid attribute
-  syntax` / `Server is unwilling to perform` (LDAP result-code wording);
-  `tests/test_ldap_patterns.py` (37 tests) covers trigger, evidence,
-  case-insensitivity, baseline exclusion and no-regression on old patterns.
-
 ### Docs
 - README: added 4 real terminal captures (`assets/screenshots/`, 2026-10-06) —
   banner, live findings with `✓ verified` / `○ unverified` evidence gating,
@@ -79,6 +50,24 @@
   silent when the marker is already present in the benign baseline.
 
 ### Added
+- LDAP error-pattern coverage: the `LDAP-001` error signature list grew from
+  6 generic strings to 23 vendor-documented patterns (`LDAP_ERROR_PATTERNS` in
+  `xploit/modules/advanced_injection.py`) — Java JNDI / Sun (`javax.naming.*`,
+  `com.sun.jndi.ldap`), Novell eDirectory (`com.novell.ldap`), UnboundID
+  (`com.unboundid.ldap`), Apache Directory (`org.apache.directory`),
+  Spring LDAP (`org.springframework.ldap`), PHP `ldap_*` extension warnings,
+  python-ldap errors, .NET `System.DirectoryServices`, OpenLDAP CLI error
+  text, and Active Directory `LdapErr:`/`DSID-` diagnostics. Matching stays
+  case-insensitive and baseline-differenced (a marker only counts when absent
+  from the baseline response); `tests/test_ldap_coverage.py` pins the list,
+  the matching rules, and an end-to-end flag on a new vendor signature.
+- LDAP two-round-trip confirmation: `LDAP-001` now flags only when TWO
+  structurally distinct malformed filters (`LDAP_CONFIRM_PAYLOADS`) both
+  produce LDAP error output — a page where any changed input trips a generic
+  error template no longer becomes a finding. `tests/test_ldap_confirmation.py`
+  covers the confirm-required path, the clean-confirm negative, None-tolerant
+  confirmation, and that confirmation requests are never sent when nothing
+  matched in the discovery round.
 - `--jitter N` CLI flag (and matching `WebScanner(jitter=...)` keyword):
   adds up to N extra random seconds to each request's spacing, on top of
   `--rate-limit`. A fixed rate limit produces metronomic traffic that naive

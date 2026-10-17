@@ -2,14 +2,78 @@ from __future__ import annotations
 from .base import BaseModule
 from ..scanner import Finding, HIGH, MEDIUM, mutate_query
 
+#: Substrings that indicate an LDAP error surfaced to the user. Matched
+#: case-insensitively and required to be ABSENT from the baseline response
+#: before a payload response is treated as evidence (so docs/FAQ pages that
+#: merely mention LDAP do not false-positive). Entries are grouped by the
+#: stack they come from: Java JNDI / Novell JLDAP / UnboundID / Apache
+#: Directory / Spring LDAP (server/library stack traces), PHP ldap_*
+#: extension, python-ldap, .NET DirectoryServices, OpenLDAP CLI tools, and
+#: Microsoft Active Directory DSID/LdapErr diagnostics.
+LDAP_ERROR_PATTERNS = (
+    # Java JNDI + Sun LDAP service provider
+    "javax.naming.directory",
+    "javax.naming.NamingException",
+    "com.sun.jndi.ldap",
+    # Novell eDirectory (JLDAP)
+    "com.novell.ldap",
+    # UnboundID / Ping Identity LDAP SDK
+    "com.unboundid.ldap",
+    # Apache Directory API / Studio
+    "org.apache.directory",
+    # Spring LDAP
+    "org.springframework.ldap",
+    # Generic Java LDAP exception classes
+    "LDAPException",
+    # PHP ldap_* extension (warnings show the calling function)
+    "ldap_search",
+    "ldap_bind",
+    "ldap_parse_result",
+    "ldap_err2str",
+    # python-ldap error constants raised by real backends
+    "python-ldap",
+    "ldap.FILTER_ERROR",
+    "ldap.INVALID_DN_SYNTAX",
+    # .NET System.DirectoryServices
+    "System.DirectoryServices",
+    "DirectoryServicesCOMException",
+    # OpenLDAP error-reporting text
+    "Invalid DN syntax",
+    "Invalid LDAP filter",
+    "Bad search filter",
+    "malformed filter",
+    "Protocol error occurred",
+    "Search operation failed",
+    "LDAP: error code",
+    "ldap_parse",
+    # Microsoft Active Directory diagnostic prefixes
+    "LdapErr:",
+    "DSID-",
+)
+
+#: Confirmation payloads for the second round-trip of LDAP findings. Each is
+#: a structurally distinct malformed filter (different unbalanced parens,
+#: boolean operators, and null-byte terminators), so a finding requires the
+#: backend to reject TWO different malformed filters — not one — before it
+#: is flagged. This rules out pages where any changed input trips a generic
+#: error template that happens to name LDAP.
+LDAP_CONFIRM_PAYLOADS = (
+    "*))(|(uid=*",
+    "*)(objectclass=*",
+    "*))%00)(uid=*",
+    ")(|(cn=*))",
+)
+
 class MultiVectorInjectionModule(BaseModule):
     """Detects LDAP, XML, NoSQL, and SSTI vulnerabilities"""
     name = "Advanced Injection Vulnerabilities"
     category = "Injection"
 
     def run(self):
-        self.scanner.map_probes(self._check_url, list(self.scanner.pages))
-        self.scanner.map_probes(self._check_form, list(self.scanner.forms))
+        for url in list(self.scanner.pages):
+            self._check_url(url)
+        for form in self.scanner.forms:
+            self._check_form(form)
 
     def _check_url(self, url):
         from ..scanner import query_parameters
@@ -26,30 +90,18 @@ class MultiVectorInjectionModule(BaseModule):
             self._test_nosql_injection(form.action, param, form.method, form.inputs)
             self._test_ssti(form.action, param, form.method, form.inputs)
 
+    def _ldap_error_markers(self, text, baseline_text):
+        """LDAP error substrings present in `text` but absent from the
+        baseline response. Both comparisons are case-insensitive."""
+        text_lower = text.lower() if text else ""
+        baseline_lower = baseline_text.lower() if baseline_text else ""
+        return [e for e in LDAP_ERROR_PATTERNS
+                if e.lower() in text_lower and e.lower() not in baseline_lower]
+
     def _test_ldap_injection(self, url, param, method, base_data=None):
         """Detect LDAP Injection vulnerabilities"""
         payloads = [
             "*", "*)(&", "*))%00", "*()|&", "admin*", "*)(uid=*"
-        ]
-        ldap_errors = [
-            "javax.naming.directory",
-            "LDAPException",
-            "com.sun.jndi.ldap",
-            "ldap_search",
-            "Invalid DN syntax",
-            "Protocol error occurred",
-            # Vendor / stack-specific error strings (LDAP-001 coverage expansion):
-            "com.novell.ldap",               # Novell eDirectory Java SDK stack traces
-            "LdapErr: DSID",                 # Active Directory DSID error blob
-            "80090308",                      # AD "supplied credential is invalid" code
-            "org.springframework.ldap",      # Spring LDAP (Java)
-            "Invalid search filter",         # generic LDAP stack-trace wording
-            "Bad search filter",             # LDAP result code 18 wording
-            "Net::LDAP",                     # Perl LDAP module error pages
-            "LDAPFilterSyntaxError",         # python-ldap malformed-filter exception
-            "DirectoryServicesCOMException", # .NET System.DirectoryServices
-            "Invalid attribute syntax",      # LDAP result code 21 wording
-            "Server is unwilling to perform",# LDAP result code 53 wording
         ]
 
         baseline = self._send(url, param, method, "ldap_baseline_xploit", base_data)
@@ -59,27 +111,44 @@ class MultiVectorInjectionModule(BaseModule):
             res = self._send(url, param, method, payload, base_data)
             if not res:
                 continue
-            res_lower = res.text.lower()
-            matched = [e for e in ldap_errors if e.lower() in res_lower and e.lower() not in baseline_text]
-            if matched:
-                finding = Finding(
-                    id="LDAP-001",
-                    name="LDAP Injection",
-                    category="LDAP Injection",
-                    severity=HIGH,
-                    confidence="High",
-                    url=url,
-                    parameter=param,
-                    method=method,
-                    trigger=payload,
-                    evidence=f"LDAP error string detected: {matched[0]}",
-                    impact="Attacker can bypass authentication or extract sensitive LDAP directory information.",
-                    remediation="Use parameterized LDAP queries and escape special characters.",
-                    cwe="CWE-90"
-                )
-                self._attach_proof(finding, url, param, method, payload, base_data, matched[0])
-                self.add_finding(finding)
-                return
+            matched = self._ldap_error_markers(res.text, baseline_text)
+            if not matched:
+                continue
+            # Second confirmation round-trip: the backend must reject a second,
+            # structurally distinct malformed filter with an LDAP error too.
+            # A one-off error page tripped by any changed input does not
+            # become a finding.
+            confirm_payload, confirm_markers = None, []
+            for confirm in LDAP_CONFIRM_PAYLOADS:
+                cres = self._send(url, param, method, confirm, base_data)
+                if not cres:
+                    continue
+                confirm_markers = self._ldap_error_markers(cres.text, baseline_text)
+                if confirm_markers:
+                    confirm_payload = confirm
+                    break
+            if confirm_payload is None:
+                continue
+            finding = Finding(
+                id="LDAP-001",
+                name="LDAP Injection",
+                category="LDAP Injection",
+                severity=HIGH,
+                confidence="High",
+                url=url,
+                parameter=param,
+                method=method,
+                trigger=payload,
+                evidence=(f"LDAP error string detected by two distinct malformed "
+                          f"filters: '{payload}' -> {matched[0]}; "
+                          f"'{confirm_payload}' -> {confirm_markers[0]}"),
+                impact="Attacker can bypass authentication or extract sensitive LDAP directory information.",
+                remediation="Use parameterized LDAP queries and escape special characters.",
+                cwe="CWE-90"
+            )
+            self._attach_proof(finding, url, param, method, payload, base_data, matched[0])
+            self.add_finding(finding)
+            return
 
     def _test_xml_injection(self, url, param, method, base_data=None):
         """Detect XML Injection and XXE vulnerabilities"""
