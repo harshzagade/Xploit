@@ -34,19 +34,28 @@ LDAP_ERROR_PATTERNS = (
     "python-ldap",
     "ldap.FILTER_ERROR",
     "ldap.INVALID_DN_SYNTAX",
-    # .NET System.DirectoryServices
-    "System.DirectoryServices",
+    "LDAPFilterSyntaxError",
+    # Perl Net::LDAP
+    "Net::LDAP",
+    # .NET System.DirectoryServices (specific exception name first so the
+    # evidence names the precise type, not just the namespace)
     "DirectoryServicesCOMException",
+    "System.DirectoryServices",
     # OpenLDAP error-reporting text
     "Invalid DN syntax",
     "Invalid LDAP filter",
+    "Invalid search filter",
     "Bad search filter",
+    "Invalid attribute syntax",
+    "Server is unwilling to perform",
     "malformed filter",
     "Protocol error occurred",
     "Search operation failed",
+    "80090308",
     "LDAP: error code",
     "ldap_parse",
     # Microsoft Active Directory diagnostic prefixes
+    "LdapErr: DSID",
     "LdapErr:",
     "DSID-",
 )

@@ -18,6 +18,17 @@
   sequential-order preservation, true overlap, crash isolation, hook
   behavior, and worker-count capping.
 
+### Fixed
+- LDAP error-pattern regression: the `--parallel-modules`-era rewrite of the
+  pattern table (LDAP_ERROR_PATTERNS) had dropped 7 vendor signatures from
+  the 2026-10-14 coverage pass (`LdapErr: DSID`, `80090308`, `Net::LDAP`,
+  `LDAPFilterSyntaxError`, `Invalid search filter`, `Invalid attribute
+  syntax`, `Server is unwilling to perform`) — those backends were no
+  longer detected at all. Restored; `DirectoryServicesCOMException` is now
+  ordered before `System.DirectoryServices` so the evidence names the
+  precise exception type. `tests/test_ldap_patterns.py` +
+  `tests/test_ldap_confirmation.py` back to 43/43 green.
+
 ### Docs
 - README: added 4 real terminal captures (`assets/screenshots/`, 2026-10-06) —
   banner, live findings with `✓ verified` / `○ unverified` evidence gating,
