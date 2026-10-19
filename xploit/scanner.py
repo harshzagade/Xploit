@@ -1,3 +1,44 @@
+"""xploit.scanner — the core scan engine.
+
+A scan has three phases:
+
+1. Crawl — parallel workers (see ``--threads``) walk the target's links
+   within the same origin (plus an optional ``--scope-prefix``), collecting
+   pages, forms, and JavaScript-referenced URLs. Path shapes are normalized
+   (numeric segments become ``{ID}``) so pagination does not explode the
+   crawl budget.
+2. Entry-point discovery — every crawled page's query parameters and forms
+   become probe targets.
+3. Module fan-out — scan modules (SQLi, XSS, command/traversal, exposure,
+   auth, ...) each sweep the entry points. By default up to four modules run
+   concurrently (``--parallel-modules N``; ``1`` restores the sequential
+   loop), and each module fans its own probe requests over the
+   ``--threads`` pool.
+
+Thread-safety model: crawler workers and probe threads never share mutable
+scan state directly. ``BaseModule.add_finding`` serializes the finding
+dedupe under the scanner lock so finding order stays deterministic; the
+request counter and rate-limit bookkeeping are likewise locked.
+
+Findings pass through :func:`gate_finding` — the provenance gate. A finding
+is marked ``verified`` only when it carries replayable proof (the exact
+request plus the response marker confirming it); analyst-readable prose
+alone is never presented as proof.
+
+Public surface used by ``xploit.cli`` and ``xploit.retest``:
+
+- :class:`WebScanner` — configure a scan, call :meth:`WebScanner.scan`.
+- :class:`Finding` — one vulnerability finding with its evidence envelope.
+- :class:`ScanResult` — the finished scan, serializable via ``to_dict()``.
+- URL helpers (:func:`normalize_url`, :func:`same_origin`,
+  :func:`mutate_query`, :func:`query_parameters`, :func:`normalize_path`)
+  shared by modules.
+
+Example:
+    scanner = WebScanner("https://example.com", mode="active", max_pages=8)
+    result = scanner.scan()
+    print(result.to_dict()["summary"])
+"""
 from __future__ import annotations
 
 import concurrent.futures
@@ -28,6 +69,20 @@ FULL = "full"
 
 @dataclass(slots=True)
 class Finding:
+    """One vulnerability finding.
+
+    The base fields (``id``, ``name``, ``category``, ``severity``,
+    ``confidence``, ``url``, ``evidence``, ``impact``, ``remediation``)
+    describe the finding for reports; ``gate_finding`` fills the honesty
+    spine below them.
+
+    Evidence envelope (provenance-strict verification): a finding is
+    ``verified`` only when it carries replayable proof — the exact request
+    that demonstrated the vulnerability plus the response marker that
+    confirmed it. Prose in ``evidence`` alone is analyst-readable, not
+    proof.
+    """
+
     id: str
     name: str
     category: str
@@ -60,9 +115,16 @@ class Finding:
     retest_status: str = "not_run"
 
     def to_dict(self) -> dict[str, object]:
+        """Serialize the finding (proof envelope included) for JSON reports."""
         return asdict(self)
 
     def has_replayable_proof(self) -> bool:
+        """True when the proof envelope is sufficient for a machine retest.
+
+        Marker proofs need method + URL + response marker; timing proofs
+        (confirmation was a reproducible response delay, not a substring)
+        need method + URL + a positive delay threshold.
+        """
         if self.proof_method and self.proof_url and self.proof_marker:
             return True
         # Timing proof: no substring marker, but the delay is reproducible —
@@ -107,6 +169,9 @@ def gate_finding(finding: Finding) -> Finding:
 
 @dataclass(slots=True)
 class FormTarget:
+    """One HTML form discovered during the crawl: where it posts, how, and
+    its fields with their current values/types (``input_types`` maps names
+    to the input ``type``, e.g. ``password`` — values are defaults)."""
     page_url: str
     action: str
     method: str
@@ -115,6 +180,13 @@ class FormTarget:
 
 @dataclass(slots=True)
 class ScanResult:
+    """The finished scan: target identity, coverage, findings, and errors.
+
+    ``checks_run`` names the modules that executed; ``summary``,
+    ``total_findings`` and ``verified_findings`` are computed by
+    ``to_dict()`` so reports always reflect the final finding list.
+    """
+
     target: str
     normalized_target: str
     started_at: str
@@ -131,6 +203,8 @@ class ScanResult:
     exclude_patterns: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
+        """Serialize the result for JSON reports, including the computed
+        severity summary and the total/verified finding counts."""
         summary = summarize_findings(self.findings)
         return {
             "target": self.target,
@@ -173,6 +247,13 @@ SQL_ERRORS = (
 )
 
 def normalize_url(raw_url: str) -> str:
+    """Normalize a target URL for scanning.
+
+    Strips whitespace, prepends ``http://`` when no scheme is given (other
+    schemes are rejected — only ``http``/``https`` scan), drops userinfo
+    (``user:pass@``) so credentials never land in logs or reports, and
+    discards the fragment.
+    """
     if not isinstance(raw_url, str) or not raw_url.strip():
         raise ValueError("target must be a non-empty URL string")
     raw_url = raw_url.strip()
@@ -197,6 +278,9 @@ def _netloc_key(parsed) -> str:
         return host
     return f"{host}:{port}"
 def same_origin(url: str, root: str) -> bool:
+    """True when ``url`` shares ``root``'s scheme and (case-insensitive)
+    host-with-port. Default ports are stripped, so ``https://a:443`` matches
+    ``https://a``; unparseable URLs are out of scope (False)."""
     try:
         a = urlparse(url)
         b = urlparse(root)
@@ -234,9 +318,14 @@ def mutate_query(url: str, parameter: str, payload: str,
     return urlunparse(parsed._replace(query=urlencode(changed, doseq=True)))
 
 def query_parameters(url: str) -> list[str]:
+    """Return the URL's query parameter names, deduplicated, in first-seen
+    order. These become injection entry points for the scan modules."""
     return list(dict(parse_qsl(urlparse(url).query, keep_blank_values=True)).keys())
 
 def summarize_findings(findings: Iterable[Finding]) -> dict[str, int]:
+    """Count findings by severity. Unknown severity labels are kept as their
+    own bucket instead of being dropped, so a module's new label still
+    shows up in reports."""
     summary = {HIGH: 0, MEDIUM: 0, LOW: 0, INFO: 0}
     for finding in findings:
         summary[finding.severity] = summary.get(finding.severity, 0) + 1
@@ -266,6 +355,36 @@ def normalize_path(url: str) -> str:
     return urlunparse(parsed._replace(path='/'.join(normalized_parts), query=query, fragment=""))
 
 class WebScanner:
+    """Configurable web vulnerability scanner.
+
+    Lifecycle: create with the target and tuning knobs, optionally set the
+    callback hooks (``on_progress``/``on_finding``/``on_request``, plus the
+    parallel-module ``on_module_start``/``on_module_done``), then call
+    :meth:`scan`, which runs crawl -> entry-point discovery -> module
+    fan-out and returns a :class:`ScanResult`.
+
+    Key knobs (see ``--help`` in ``xploit.cli`` for the CLI mirror):
+
+    - ``mode``: ``passive`` (headers/exposure/data only), ``active`` (adds
+      injection modules), or ``full`` (adds heavy SSTI/LDAP/NoSQL/XML and
+      brute force).
+    - ``threads``: concurrency for crawling and per-module probe requests.
+    - ``parallel_modules``: how many scan modules may run concurrently
+      (default 4; ``1`` restores the sequential loop).
+    - ``rate_limit``/``jitter``: minimum request spacing plus a random
+      smoothing delay, to avoid metronomic traffic signatures.
+    - ``read_deadline``: hard total bound for reading one response body —
+      ``requests``' ``timeout`` is per socket operation, so without this a
+      slow-drip server bypasses ``--timeout`` and the scan hangs.
+    - ``scope_prefix``/``exclude``: restrict crawling to a path prefix, or
+      skip URLs matching Python regexes (compiled eagerly, fail fast).
+
+    Safety baked into the request layer: retries are idempotent-only
+    (GET/HEAD/OPTIONS, never POST), redirects are followed manually with a
+    loop bound and same-origin rule so payloads never leave the origin,
+    and response bodies are capped at ``MAX_BODY_BYTES``.
+    """
+
     def __init__(
         self,
         target: str,
@@ -435,6 +554,14 @@ class WebScanner:
             self.on_progress(total, total, "Checks complete")
 
     def scan(self) -> ScanResult:
+        """Run the full pipeline: crawl, entry-point discovery, module fan-out.
+
+        Always-on (passive) modules run in every mode; ``active`` adds the
+        injection modules; ``full`` adds the heavy multi-vector and
+        brute-force modules. One crashing module is recorded in ``errors``
+        and never discards the other modules' findings. An empty crawl
+        yields a partial result rather than a bare exception.
+        """
         started = time.strftime("%Y-%m-%d %H:%M:%S %Z")
         start_time = time.monotonic()
         
