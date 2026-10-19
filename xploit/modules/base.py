@@ -12,6 +12,10 @@ class BaseModule:
         self.scanner = scanner
         # Initialize deduplication set within the module's scope
         self._dedupe = set()
+        # Per-module recorded-finding count, incremented inside the locked
+        # section of add_finding so parallel-module runners can report an
+        # exact per-module count (a global len() diff would race).
+        self.findings_added = 0
         # Scanner-level dedup key set shared across ALL modules, created lazily
         # here so base.py doesn't require changes to scanner.py. Prevents the
         # same finding (id + url + parameter) from being reported twice when
@@ -44,6 +48,7 @@ class BaseModule:
             self._dedupe.add(key)
             self.scanner._finding_keys.add(xkey)
             self.scanner.findings.append(finding)
+            self.findings_added += 1
         if self.scanner.on_finding:
             self.scanner.on_finding(finding)
 

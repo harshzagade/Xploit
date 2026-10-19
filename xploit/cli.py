@@ -77,6 +77,12 @@ def build_parser() -> argparse.ArgumentParser:
                         help="concurrency for crawling and probe requests "
                              "(default: 5; raise for faster scans on responsive "
                              "targets)")
+    parser.add_argument("--parallel-modules", type=int, default=4, metavar="N",
+                        help="run up to N scan modules concurrently side by side "
+                             "on the same terminal (default: 4; 1 = sequential). "
+                             "Each module already fans its own probes over "
+                             "--threads, so this multiplies in-flight requests "
+                             "— lower it for fragile targets.")
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                         help="skip crawling URLs matching PATTERN (Python regex, matched against "
                              "the full URL); may be repeated")
@@ -127,6 +133,7 @@ def _build_scanner(args: argparse.Namespace, target_url: str) -> WebScanner:
         scope_prefix=args.scope_prefix,
         exclude=args.exclude,
         threads=args.threads,
+        parallel_modules=args.parallel_modules,
         verify=not args.insecure,
     )
     apply_request_overrides(scanner, args.header, args.cookie)
@@ -339,6 +346,12 @@ def _run_single_target(args: argparse.Namespace, target_url: str) -> int:
             if time.monotonic() - _ui_state["last_draw"] >= 0.2:
                 _redraw()
 
+    def request_counter_callback(count: int):
+        # Parallel mode has no animated bar to redraw; just record the
+        # cumulative count so the module done lines can show it.
+        with _ui_lock:
+            _ui_state["requests"] = count
+
     def finding_callback(finding: Finding):
         with _ui_lock:
             _ui_state["findings"] += 1
@@ -370,10 +383,38 @@ def _run_single_target(args: argparse.Namespace, target_url: str) -> int:
             sys.stdout.flush()
             _ui_state["last_draw"] = 0.0  # force next tick to redraw
 
+    def _module_status_line(text: str):
+        # One animated bar cannot represent N concurrent modules (same
+        # rationale as multi-target mode), so parallel-module runs use
+        # one status line per module start/finish instead.
+        with _ui_lock:
+            if colors:
+                sys.stdout.write("\r\033[K")
+            print(text)
+            sys.stdout.flush()
+
+    def module_start_callback(name: str):
+        _module_status_line(
+            f"  {color('>>', 'INFO', colors)} {name} — starting")
+
+    def module_done_callback(name: str, added: int, secs: float):
+        with _ui_lock:
+            req_total = _ui_state["requests"]
+        req = f" · {req_total} req" if req_total else ""
+        _module_status_line(
+            f"  {color('<<', 'OK', colors)} {name} — done: "
+            f"{added} findings in {secs:.0f}s{req}")
+
     if not args.quiet and args.format == "text":
-        scanner.on_progress = progress_callback
-        scanner.on_finding = finding_callback
-        scanner.on_request = request_callback
+        if args.parallel_modules > 1:
+            scanner.on_module_start = module_start_callback
+            scanner.on_module_done = module_done_callback
+            scanner.on_finding = finding_callback
+            scanner.on_request = request_counter_callback
+        else:
+            scanner.on_progress = progress_callback
+            scanner.on_finding = finding_callback
+            scanner.on_request = request_callback
 
     try:
         result = scanner.scan()

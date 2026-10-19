@@ -41,8 +41,10 @@ class Resp:
 
 
 def make_mod(monkeypatch, payload_text, baseline_text="login page, enter credentials"):
+    import threading
     mod = MultiVectorInjectionModule(
-        SimpleNamespace(findings=[], on_finding=None, _finding_keys=set())
+        SimpleNamespace(findings=[], on_finding=None, _finding_keys=set(),
+                        _lock=threading.Lock())
     )
 
     def fake_send(url, param, method, payload, base_data=None):

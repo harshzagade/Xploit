@@ -307,6 +307,11 @@ options:
                         restrict crawling to a path prefix
   --threads THREADS     concurrent crawler workers (default: 5; raise for
                         faster crawls on responsive targets)
+  --parallel-modules N  run up to N scan modules concurrently side by side
+                        on the same terminal (default: 4; 1 = sequential).
+                        Each module already fans its own probes over --threads,
+                        so this multiplies in-flight requests — lower it for
+                        fragile targets.
   --exclude PATTERN     skip crawling URLs matching PATTERN (Python regex,
                         matched against the full URL); may be repeated
   --format {text,json}  output format

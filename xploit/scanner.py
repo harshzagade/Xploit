@@ -278,6 +278,7 @@ class WebScanner:
         scope_prefix: str | None = None,
         exclude: list[str] | None = None,
         threads: int = 5,
+        parallel_modules: int = 4,
         user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         verify: bool = True,
         read_deadline: float | None = None,
@@ -297,6 +298,11 @@ class WebScanner:
         self.exclude: list[str] = list(exclude or [])
         self._exclude_res: list[re.Pattern[str]] = self._compile_exclude_patterns(self.exclude)
         self.threads = max(1, threads)
+        # How many scan modules may run concurrently (default 4; 1 restores
+        # the historical sequential loop). Each module already fans its own
+        # probes out over self.threads, so module-level parallelism
+        # multiplies in-flight requests — lower it for fragile targets.
+        self.parallel_modules = max(1, parallel_modules)
         self.verify = verify
         if read_deadline is not None and read_deadline <= 0:
             raise ValueError("read_deadline must be positive")
@@ -350,11 +356,83 @@ class WebScanner:
         self._last_request_at = 0.0
         self.on_progress: Callable[[int, int, str], None] | None = None
         self.on_finding: Callable[[Finding], None] | None = None
+        # Per-module lifecycle hooks, used by the parallel-module UI.
+        # on_module_start(name); on_module_done(name, findings_added, seconds).
+        # A raising hook must never kill a scan, so the parallel runner
+        # guards every hook call.
+        self.on_module_start: Callable[[str], None] | None = None
+        self.on_module_done: Callable[[str, int, float], None] | None = None
         # Fired on every HTTP request attempt (any thread). Lets the UI show
         # liveness during long sequential module runs instead of appearing
         # frozen on a single phase label.
         self.on_request: Callable[[int], None] | None = None
         self._request_count = 0
+
+    def _run_one_module(self, module) -> None:
+        """Execute a single scan module with a crash guard.
+
+        Safe to call from worker threads: error and bookkeeping appends
+        are serialized under the scanner lock, and findings flow through
+        BaseModule.add_finding's locked dedupe.
+        """
+        try:
+            module.run()
+        except Exception as exc:
+            # One crashing module must not discard every other module's findings.
+            with self._lock:
+                self.errors.append(f"Module {module.name} crashed: {exc}")
+        with self._lock:
+            self._checks_run.append(module.name)
+
+    def _run_one_module_tracked(self, module) -> None:
+        """Parallel-mode wrapper: fire the module lifecycle hooks around
+        _run_one_module. Hook exceptions are swallowed — a UI callback must
+        never fail a scan."""
+        name = module.name
+        if self.on_module_start:
+            try:
+                self.on_module_start(name)
+            except Exception:
+                pass
+        t0 = time.monotonic()
+        self._run_one_module(module)
+        # Per-module count from the module itself: a global len() diff would
+        # race with sibling modules appending concurrently.
+        added = getattr(module, "findings_added", 0)
+        if self.on_module_done:
+            try:
+                self.on_module_done(name, added, time.monotonic() - t0)
+            except Exception:
+                pass
+
+    def _run_modules_parallel(self, modules_to_run) -> None:
+        """Run scan modules concurrently on a small thread pool.
+
+        Module count here is worker count, not probe threads: each module
+        already fans its own probes out over self.threads, so this
+        multiplies in-flight requests by up to --parallel-modules.
+
+        Keeps the same on_progress contract as the sequential loop —
+        bounded (current, total) events plus a final "Checks complete" —
+        so API consumers don't lose their completion signal.
+        """
+        total = len(modules_to_run)
+        workers = max(1, min(self.parallel_modules, total))
+        finished = [0]
+
+        def _track(module) -> None:
+            self._run_one_module_tracked(module)
+            with self._lock:
+                finished[0] += 1
+                n = finished[0]
+            if self.on_progress:
+                self.on_progress(n, total, f"Completed {module.name}")
+
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=workers, thread_name_prefix="xploit-module") as executor:
+            list(executor.map(_track, modules_to_run))
+        if self.on_progress:
+            self.on_progress(total, total, "Checks complete")
 
     def scan(self) -> ScanResult:
         started = time.strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -403,18 +481,16 @@ class WebScanner:
             # ExposureModule already runs in PASSIVE/FULL above.
             # Do NOT add it again for ACTIVE — was causing double findings.
 
-        for i, module in enumerate(modules_to_run, start=1):
-            if self.on_progress:
-                self.on_progress(i - 1, len(modules_to_run), f"Running {module.name}")
-            self._checks_run.append(module.name)
-            try:
-                module.run()
-            except Exception as exc:
-                # One crashing module must not discard every other module's findings.
-                self.errors.append(f"Module {module.name} crashed: {exc}")
-            if self.on_progress:
-                phase = "Checks complete" if i == len(modules_to_run) else f"Completed {module.name}"
-                self.on_progress(i, len(modules_to_run), phase)
+        if self.parallel_modules <= 1 or len(modules_to_run) <= 1:
+            for i, module in enumerate(modules_to_run, start=1):
+                if self.on_progress:
+                    self.on_progress(i - 1, len(modules_to_run), f"Running {module.name}")
+                self._run_one_module(module)
+                if self.on_progress:
+                    phase = "Checks complete" if i == len(modules_to_run) else f"Completed {module.name}"
+                    self.on_progress(i, len(modules_to_run), phase)
+        else:
+            self._run_modules_parallel(modules_to_run)
 
         return ScanResult(
             target=self.target,

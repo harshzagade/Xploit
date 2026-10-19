@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+- `--parallel-modules N` (default 4, parallel by default): run up to N scan
+  modules concurrently side by side on the same terminal instead of one
+  after another (`1` restores the old sequential loop). Module
+  findings still flow through the locked dedupe in
+  `BaseModule.add_finding`, one crashing module cannot kill its siblings,
+  and each module reports an exact per-module finding count via the new
+  `findings_added` counter (a global len() diff would race). Parallel runs keep
+  the same `on_progress` contract as sequential (bounded per-module events +
+  final "Checks complete") and the CLI's per-module done lines now carry the
+  running request count (`· N req`), since one animated bar cannot represent
+  N concurrent modules — same rationale as multi-target mode.
+  `tests/test_parallel_modules.py` (11 tests) covers the CLI wiring,
+  sequential-order preservation, true overlap, crash isolation, hook
+  behavior, and worker-count capping.
+
 ### Docs
 - README: added 4 real terminal captures (`assets/screenshots/`, 2026-10-06) —
   banner, live findings with `✓ verified` / `○ unverified` evidence gating,
