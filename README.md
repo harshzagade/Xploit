@@ -231,7 +231,7 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 | | Directory listing | Response pattern matching |
 | **CSRF** | Missing anti-CSRF tokens | POST form analysis |
 | **Access Control** | IDOR indicators | Predictable ID detection |
-| | Open Redirect | Redirect parameter testing (standard + bypass forms: protocol-relative, backslash, encoded/double-encoded scheme, null-byte) |
+| | Open Redirect | Redirect parameter testing |
 | **Other** | CORS misconfiguration | CORS header analysis |
 | | Clickjacking | Frame options check |
 | | File upload surfaces | Input type detection |

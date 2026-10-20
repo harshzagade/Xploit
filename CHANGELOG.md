@@ -3,16 +3,6 @@
 ## Unreleased
 
 ### Added
-- Open-redirect payload coverage: `next`/`url`/`redirect`/`return`/`dest`
-  parameters are now probed with a 6-form bypass family (standard,
-  protocol-relative `//host`, backslash `\\/\\/host`, percent-encoded
-  scheme, double-encoded scheme, null-byte prefix) instead of one literal
-  URL, catching validators that strip or compare only one representation
-  of the destination. Detection normalizes backslashes before parsing the
-  `Location` netloc; one finding per vulnerable parameter, with the
-  successful form named in the evidence. `tests/test_open_redirect_payloads.py`
-  (21 tests) covers every form, sibling-domain/relative-URL non-fires,
-  payload integrity through query mutation, and the one-finding rule.
 - `--modules LIST`: run only the named scan modules (e.g.
   `--modules xss,sqli`) for faster targeted scans; repeatable and
   case-insensitive, with friendly aliases (`traversal`/`command` → `cmd`,

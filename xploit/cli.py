@@ -11,6 +11,7 @@ from collections.abc import Callable
 from . import __version__
 from .reporting import render_json_report, meets_severity
 from .scanner import ACTIVE, FULL, PASSIVE, HIGH, Finding, ScanResult, WebScanner, summarize_findings
+from .scanner import MODULE_REGISTRY
 
 
 RESET = "\033[0m"
@@ -86,6 +87,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                         help="skip crawling URLs matching PATTERN (Python regex, matched against "
                              "the full URL); may be repeated")
+    parser.add_argument("--modules", action="append", default=[], metavar="LIST",
+                        help="run only the named scan modules, comma-separated, "
+                             "for faster targeted scans (e.g. --modules xss,sqli); "
+                             "may be repeated. Valid modules: "
+                             + ", ".join(MODULE_REGISTRY))
     parser.add_argument("--format", choices=("text", "json"), default="text", help="output format")
     parser.add_argument("--output", metavar="PATH", default=None, help="write the report to a file (ANSI colors stripped)")
     parser.add_argument("--retest", action="store_true", help="re-fire each finding's proof request to confirm it still reproduces (active traffic; skipped in passive mode)")
@@ -134,6 +140,9 @@ def _build_scanner(args: argparse.Namespace, target_url: str) -> WebScanner:
         exclude=args.exclude,
         threads=args.threads,
         parallel_modules=args.parallel_modules,
+        # getattr: Namespaces built by hand (tests, embedders) may predate
+        # the --modules flag.
+        modules=getattr(args, "modules", None) or None,
         verify=not args.insecure,
     )
     apply_request_overrides(scanner, args.header, args.cookie)
@@ -458,6 +467,7 @@ def build_interactive_args(input_fn=input) -> argparse.Namespace:
         jitter=0.0,
         scope_prefix="/",
         exclude=[],
+        modules=[],
         format="text",
         output=None,
         retest=False,
@@ -524,6 +534,8 @@ def render_text_result(result: ScanResult, *, colors: bool = True) -> None:
     print(f"Scope prefix      : {result.scope_prefix}")
     if result.exclude_patterns:
         print(f"Exclude patterns  : {', '.join(result.exclude_patterns)}")
+    if result.modules:
+        print(f"Modules selected  : {', '.join(result.modules)}")
     print(f"Duration          : {result.duration_seconds}s")
     print(f"Pages crawled     : {len(result.pages_seen)}")
     print(f"Forms discovered  : {result.forms_seen}")

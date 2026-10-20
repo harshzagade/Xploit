@@ -42,6 +42,7 @@ Example:
 from __future__ import annotations
 
 import concurrent.futures
+import importlib
 import random
 import re
 import threading
@@ -201,6 +202,9 @@ class ScanResult:
     findings: list[Finding]
     errors: list[str]
     exclude_patterns: list[str] = field(default_factory=list)
+    # --modules selection (canonical registry keys) that restricted this
+    # scan's module fan-out; empty means every mode-appropriate module ran.
+    modules: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Serialize the result for JSON reports, including the computed
@@ -221,10 +225,82 @@ class ScanResult:
             "findings": [finding.to_dict() for finding in self.findings],
             "errors": self.errors,
             "exclude_patterns": list(self.exclude_patterns),
+            "modules": list(self.modules),
             "summary": summary,
             "total_findings": len(self.findings),
             "verified_findings": sum(1 for f in self.findings if f.verified),
         }
+
+# Registry of scan modules selectable via --modules / WebScanner(modules=...).
+# Keys are the short CLI names; each entry maps to (module file, class name)
+# inside xploit.modules. The dict order is the canonical fan-out order: an
+# explicit --modules selection keeps this order (not the order typed) so
+# restricted scans stay deterministic.
+MODULE_REGISTRY: dict[str, tuple[str, str]] = {
+    "general": ("general", "GeneralModule"),
+    "exposure": ("exposure", "ExposureModule"),
+    "data": ("sensitive_data", "SensitiveDataModule"),
+    "sqli": ("sqli", "SQLInjectionModule"),
+    "xss": ("xss", "XSSModule"),
+    "cmd": ("injection_advanced", "CommandTraversalModule"),
+    "logic": ("logic_vulnerabilities", "LogicVulnerabilityModule"),
+    "auth": ("auth_advanced", "AdvancedAuthModule"),
+    "advanced": ("advanced_injection", "MultiVectorInjectionModule"),
+    "brute": ("brute_force", "BruteForceModule"),
+}
+
+# Friendly spellings that resolve to the canonical registry keys above.
+MODULE_ALIASES: dict[str, str] = {
+    "traversal": "cmd",
+    "command": "cmd",
+    "sensitive": "data",
+    "sensitive-data": "data",
+    "injection": "advanced",
+    "multivector": "advanced",
+    "multi-vector": "advanced",
+}
+
+
+def parse_module_keys(raw: str | Iterable[str] | None) -> list[str]:
+    """Normalize a --modules selection to canonical registry keys.
+
+    Accepts a comma-separated string or a list of them (matching the
+    repeatable CLI flag). Keys are lowercased and stripped, aliases resolve
+    to the canonical key, duplicates are dropped. The result follows the
+    canonical MODULE_REGISTRY order. Unknown names raise ValueError listing
+    every valid key — fail fast at construction, not mid-scan.
+    """
+    parts: list[str] = []
+    for chunk in ([raw] if isinstance(raw, str) else (raw or [])):
+        parts.extend(chunk.split(","))
+    keys: list[str] = []
+    for part in parts:
+        name = part.strip().lower()
+        if not name:
+            continue
+        name = MODULE_ALIASES.get(name, name)
+        if name not in MODULE_REGISTRY:
+            valid = ", ".join(list(MODULE_REGISTRY) + sorted(MODULE_ALIASES))
+            raise ValueError(
+                f"unknown scan module {part.strip()!r}; "
+                f"valid modules: {valid}"
+            )
+        if name not in keys:
+            keys.append(name)
+    order = {key: i for i, key in enumerate(MODULE_REGISTRY)}
+    return sorted(keys, key=order.__getitem__)
+
+
+def load_module_class(key: str) -> type:
+    """Import and return the scan-module class for a registry key.
+
+    Lazy import keeps `xploit.scanner`'s import cheap — scan() only pays
+    for the modules it actually runs.
+    """
+    module_name, class_name = MODULE_REGISTRY[key]
+    module = importlib.import_module(f"{__package__}.modules.{module_name}")
+    return getattr(module, class_name)
+
 
 SQL_ERRORS = (
     "you have an error in your sql syntax",
@@ -371,6 +447,10 @@ class WebScanner:
     - ``threads``: concurrency for crawling and per-module probe requests.
     - ``parallel_modules``: how many scan modules may run concurrently
       (default 4; ``1`` restores the sequential loop).
+    - ``modules``: run only the named scan modules (canonical registry
+      keys, e.g. ``modules="xss,sqli"``), validated eagerly so a typo fails
+      fast. An explicit selection overrides the mode-based module gating in
+      :meth:`scan` — the caller asked for exactly these modules.
     - ``rate_limit``/``jitter``: minimum request spacing plus a random
       smoothing delay, to avoid metronomic traffic signatures.
     - ``read_deadline``: hard total bound for reading one response body —
@@ -398,6 +478,7 @@ class WebScanner:
         exclude: list[str] | None = None,
         threads: int = 5,
         parallel_modules: int = 4,
+        modules: str | list[str] | None = None,
         user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
         verify: bool = True,
         read_deadline: float | None = None,
@@ -422,6 +503,14 @@ class WebScanner:
         # probes out over self.threads, so module-level parallelism
         # multiplies in-flight requests — lower it for fragile targets.
         self.parallel_modules = max(1, parallel_modules)
+        # --modules: run only the named scan modules (canonical registry
+        # keys, comma-separated string or list). Validated eagerly so a typo
+        # fails fast at construction instead of mid-scan; an explicit
+        # selection overrides the mode-based gating in scan(). None means
+        # run every mode-appropriate module.
+        self.modules = parse_module_keys(modules) if modules is not None else None
+        if modules is not None and not self.modules:
+            raise ValueError("--modules requires at least one module name")
         self.verify = verify
         if read_deadline is not None and read_deadline <= 0:
             raise ValueError("read_deadline must be positive")
@@ -583,30 +672,36 @@ class WebScanner:
         from .modules.brute_force import BruteForceModule
 
         modules_to_run = []
-        # Passive checks always run — headers, exposure, and data disclosure
-        # are relevant regardless of whether injection testing is enabled.
-        modules_to_run.extend([
-            GeneralModule(self),
-            ExposureModule(self),
-            SensitiveDataModule(self),
-        ])
-        if self.mode in {ACTIVE, FULL}:
+        if self.modules is not None:
+            # Explicit --modules selection: run only the named modules, in
+            # canonical registry order. Overrides the mode-based gating below —
+            # the caller asked for exactly these modules.
+            modules_to_run = [load_module_class(key)(self) for key in self.modules]
+        else:
+            # Passive checks always run — headers, exposure, and data disclosure
+            # are relevant regardless of whether injection testing is enabled.
             modules_to_run.extend([
-                SQLInjectionModule(self),
-                XSSModule(self),
-                CommandTraversalModule(self),
-                LogicVulnerabilityModule(self),
-                AdvancedAuthModule(self),
+                GeneralModule(self),
+                ExposureModule(self),
+                SensitiveDataModule(self),
             ])
-        if self.mode == FULL:
-            # Heavy modules — SSTI/LDAP/NoSQL/XML injection and brute force
-            # are thorough but slow; only run in full mode.
-            modules_to_run.extend([
-                MultiVectorInjectionModule(self),
-                BruteForceModule(self),
-            ])
-            # ExposureModule already runs in PASSIVE/FULL above.
-            # Do NOT add it again for ACTIVE — was causing double findings.
+            if self.mode in {ACTIVE, FULL}:
+                modules_to_run.extend([
+                    SQLInjectionModule(self),
+                    XSSModule(self),
+                    CommandTraversalModule(self),
+                    LogicVulnerabilityModule(self),
+                    AdvancedAuthModule(self),
+                ])
+            if self.mode == FULL:
+                # Heavy modules — SSTI/LDAP/NoSQL/XML injection and brute force
+                # are thorough but slow; only run in full mode.
+                modules_to_run.extend([
+                    MultiVectorInjectionModule(self),
+                    BruteForceModule(self),
+                ])
+                # ExposureModule already runs in PASSIVE/FULL above.
+                # Do NOT add it again for ACTIVE — was causing double findings.
 
         if self.parallel_modules <= 1 or len(modules_to_run) <= 1:
             for i, module in enumerate(modules_to_run, start=1):
@@ -634,6 +729,7 @@ class WebScanner:
             findings=self.findings,
             errors=self.errors,
             exclude_patterns=list(self.exclude),
+            modules=list(self.modules or []),
         )
 
     # Bound for manual redirect following. requests' own default is 30, which
@@ -1093,5 +1189,7 @@ class WebScanner:
     def _empty_result(self, started, start_time):
         return ScanResult(
             self.target, self.root, started, round(time.monotonic() - start_time, 2),
-            "unreachable", self.mode, self.scope_prefix, 0, [], [], 0, [], self.errors
+            "unreachable", self.mode, self.scope_prefix, 0, [], [], 0, [], self.errors,
+            exclude_patterns=list(self.exclude),
+            modules=list(self.modules or []),
         )
