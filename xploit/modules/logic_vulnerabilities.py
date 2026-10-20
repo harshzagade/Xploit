@@ -8,6 +8,46 @@ from ..scanner import Finding, HIGH, mutate_query
 # field names so 'residue' (contains 'sid') doesn't count as CSRF-protected.
 _CSRF_TOKEN_WORDS = {'csrf', 'xsrf', 'token', 'sid', 'nonce', 'crumb', 'authenticity'}
 
+# Open-redirect probe family: (form name, payload). The standard form
+# catches naive implementations; each bypass form catches a validator that
+# strips or compares only one representation of the destination:
+#   protocol-relative — no scheme at all (//host/...)
+#   backslash        — \\/\\/host/... (stacks/browsers normalize \ to /)
+#   encoded-scheme   — scheme percent-encoded once (naive string-prefix checks)
+#   double-encoded   — encoded twice (validators that decode exactly once)
+#   null-byte        — %00 prefix (old truncation-style filters)
+# example.com is a reserved documentation domain, safe as a canary host.
+OPEN_REDIRECT_PAYLOADS: tuple[tuple[str, str], ...] = (
+    ("standard", "https://example.com/xploit-redirect"),
+    ("protocol-relative", "//example.com/xploit-redirect"),
+    ("backslash", "\\/\\/example.com/xploit-redirect"),
+    ("encoded-scheme", "https%3A%2F%2Fexample.com/xploit-redirect"),
+    ("double-encoded", "https%253A%252F%252Fexample.com/xploit-redirect"),
+    ("null-byte", "%00https://example.com/xploit-redirect"),
+)
+
+# Query parameters that commonly carry a redirect destination.
+REDIRECT_PARAMS = {"next", "url", "redirect", "return", "dest"}
+
+
+def _redirect_netloc(location: str) -> str:
+    """Effective destination host of a Location header value.
+
+    Backslashes are normalized to slashes first: some stacks emit the
+    payload verbatim (\\/\\/example.com/...) and urlparse sees no netloc
+    in that raw form, while browsers/stacks treat backslash as a path
+    separator. Normalization turns \\/\\/host into ////host, so a run of
+    3+ slashes is collapsed back to the protocol-relative form //host
+    before parsing. Returns "" for relative redirects and unparsable
+    values.
+    """
+    try:
+        text = location.replace("\\", "/")
+        text = re.sub(r"/{3,}", "//", text)
+        return urlparse(text).netloc.lower()
+    except ValueError:
+        return ""
+
 def _has_csrf_token(field_names) -> bool:
     for name in field_names:
         spaced = re.sub(r'([a-z0-9])([A-Z])', r'\1 \2', name)
@@ -45,38 +85,36 @@ class LogicVulnerabilityModule(BaseModule):
                     ))
 
     def _check_open_redirect(self):
-        REDIRECT_PARAMS = {"next", "url", "redirect", "return", "dest"}
-        payload = "https://example.com/xploit-redirect"
-        payload_netloc = urlparse(payload).netloc.lower()
-        self._redirect_params = REDIRECT_PARAMS
-        self._redirect_payload = payload
+        payload_netloc = urlparse(OPEN_REDIRECT_PAYLOADS[0][1]).netloc.lower()
         self._redirect_payload_netloc = payload_netloc
         self.scanner.map_probes(self._check_open_redirect_url, list(self.scanner.pages))
 
     def _check_open_redirect_url(self, url):
         from ..scanner import query_parameters
-        REDIRECT_PARAMS = self._redirect_params
-        payload = self._redirect_payload
         payload_netloc = self._redirect_payload_netloc
         for param in query_parameters(url):
-            if param.lower() in REDIRECT_PARAMS:
+            if param.lower() not in REDIRECT_PARAMS:
+                continue
+            for form, payload in OPEN_REDIRECT_PAYLOADS:
                 test_url = mutate_query(url, param, payload)
                 res = self.scanner._request("GET", test_url, allow_redirects=False)
-                if res and res.status_code in (301, 302, 303, 307, 308):
-                    location = res.headers.get("Location", "")
-                    # Compare parsed netlocs instead of startswith: catches
-                    # protocol-relative destinations (//example.com/...) too,
-                    # and won't fire on relative-path redirects.
-                    try:
-                        loc_netloc = urlparse(location).netloc.lower()
-                    except ValueError:
-                        continue
-                    if loc_netloc and loc_netloc == payload_netloc:
-                        self.add_finding(Finding(
-                            id="REDIR-001", name="Open Redirect",
-                            category="Open Redirect", severity=HIGH, confidence="High",
-                            url=test_url, parameter=param,
-                            evidence=f"Redirects to external {location}",
-                            impact="The application accepts an external redirect destination, which enables phishing, redirect-chain abuse, and possible token forwarding to attacker-controlled sites.",
-                            remediation="Use relative redirects.", cwe="CWE-601"
-                        ))
+                if not (res and res.status_code in (301, 302, 303, 307, 308)):
+                    continue
+                location = res.headers.get("Location", "")
+                # Compare parsed netlocs instead of startswith: catches
+                # protocol-relative and backslash destinations (//example.com/...
+                # and \\/\\/example.com/...) too, and won't fire on
+                # relative-path redirects.
+                if _redirect_netloc(location) and _redirect_netloc(location) == payload_netloc:
+                    self.add_finding(Finding(
+                        id="REDIR-001", name="Open Redirect",
+                        category="Open Redirect", severity=HIGH, confidence="High",
+                        url=test_url, parameter=param,
+                        evidence=f"Redirects to external {location} (payload form: {form})",
+                        impact="The application accepts an external redirect destination, which enables phishing, redirect-chain abuse, and possible token forwarding to attacker-controlled sites.",
+                        remediation="Use relative redirects.", cwe="CWE-601"
+                    ))
+                    # One finding per vulnerable parameter — the successful
+                    # form is named in the evidence; probing the rest would
+                    # only duplicate the same vulnerable parameter.
+                    break

@@ -152,6 +152,18 @@ Each `--exclude` is a Python regex matched against the full URL (repeatable).
 Excluded URLs are never requested and their links are never followed, so the
 scan skips noisy areas like logout endpoints or binary downloads.
 
+### Run Only Selected Scan Modules
+```bash
+xploit https://target.example --modules xss,sqli
+xploit https://target.example --modules general --modules exposure
+```
+An explicit selection skips every other module, so targeted re-scans finish
+faster. Module names are case-insensitive (aliases: `traversal`/`command` →
+`cmd`, `sensitive`/`sensitive-data` → `data`, `injection`/`multivector`/`multi-vector`
+→ `advanced`); unknown names fail fast listing the valid keys. The selection
+overrides the `--mode` gating — the named modules run exactly as asked — and
+is recorded in the text summary ("Modules selected") and JSON report.
+
 ### Run Without Installing
 ```bash
 python3 xploit.py https://target.example
@@ -219,7 +231,7 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 | | Directory listing | Response pattern matching |
 | **CSRF** | Missing anti-CSRF tokens | POST form analysis |
 | **Access Control** | IDOR indicators | Predictable ID detection |
-| | Open Redirect | Redirect parameter testing |
+| | Open Redirect | Redirect parameter testing (standard + bypass forms: protocol-relative, backslash, encoded/double-encoded scheme, null-byte) |
 | **Other** | CORS misconfiguration | CORS header analysis |
 | | Clickjacking | Frame options check |
 | | File upload surfaces | Input type detection |
@@ -314,6 +326,10 @@ options:
                         fragile targets.
   --exclude PATTERN     skip crawling URLs matching PATTERN (Python regex,
                         matched against the full URL); may be repeated
+  --modules LIST        run only the named scan modules, comma-separated,
+                        for faster targeted scans (e.g. --modules xss,sqli);
+                        may be repeated. Valid modules: general, exposure,
+                        data, sqli, xss, cmd, logic, auth, advanced, brute
   --format {text,json}  output format
   --output PATH         write the report to a file (ANSI colors stripped)
   --retest              re-fire each finding's proof request to confirm it

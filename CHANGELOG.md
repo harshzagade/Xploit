@@ -3,6 +3,27 @@
 ## Unreleased
 
 ### Added
+- Open-redirect payload coverage: `next`/`url`/`redirect`/`return`/`dest`
+  parameters are now probed with a 6-form bypass family (standard,
+  protocol-relative `//host`, backslash `\\/\\/host`, percent-encoded
+  scheme, double-encoded scheme, null-byte prefix) instead of one literal
+  URL, catching validators that strip or compare only one representation
+  of the destination. Detection normalizes backslashes before parsing the
+  `Location` netloc; one finding per vulnerable parameter, with the
+  successful form named in the evidence. `tests/test_open_redirect_payloads.py`
+  (21 tests) covers every form, sibling-domain/relative-URL non-fires,
+  payload integrity through query mutation, and the one-finding rule.
+- `--modules LIST`: run only the named scan modules (e.g.
+  `--modules xss,sqli`) for faster targeted scans; repeatable and
+  case-insensitive, with friendly aliases (`traversal`/`command` → `cmd`,
+  `sensitive`/`sensitive-data` → `data`, `injection`/`multivector`/`multi-vector`
+  → `advanced`). Unknown names fail fast at scanner construction with the
+  valid key list; the fan-out keeps canonical registry order regardless of
+  typing order. An explicit selection overrides the `--mode`-based module
+  gating, and is recorded as `modules` in the JSON report plus a "Modules
+  selected" line in the text summary. Mirrors as `WebScanner(modules=...)`.
+  `tests/test_modules_flag.py` (34 tests) covers parsing, aliases, eager
+  validation, CLI wiring, and end-to-end module filtering.
 - `--parallel-modules N` (default 4, parallel by default): run up to N scan
   modules concurrently side by side on the same terminal instead of one
   after another (`1` restores the old sequential loop). Module
