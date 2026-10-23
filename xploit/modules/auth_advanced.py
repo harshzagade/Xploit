@@ -2,7 +2,7 @@ from __future__ import annotations
 import re
 from urllib.parse import parse_qs, urlparse
 from .base import BaseModule
-from ..scanner import Finding, MEDIUM
+from ..scanner import Finding, MEDIUM, normalize_dedupe_url
 
 # Whole-name matches for session-token URL params. Matched against tokenized
 # param names so 'consideration' (sid), 'author' (auth) etc. don't false-positive.
@@ -166,12 +166,16 @@ class AdvancedAuthModule(BaseModule):
                 # (COOK-002 only fires on HTTPS; on HTTP the Secure finding
                 # here is still wanted.)
                 flag_to_cook = {"Secure": "COOK-002", "HttpOnly": "COOK-001"}
+                # _finding_keys holds canonical dedupe keys (id, normalized
+                # URL, parameter) — normalize our URL the same way so a
+                # general.py flag on the query-string page URL suppresses the
+                # duplicate AUTH-006 on the bare action URL.
                 already = {
                     (fid, u, (param or "").lower())
                     for fid, u, param in getattr(self.scanner, "_finding_keys", set())
                 }
                 missing = [f for f in missing
-                           if (flag_to_cook[f], url, cookie_name) not in already]
+                           if (flag_to_cook[f], normalize_dedupe_url(url), cookie_name) not in already]
                 if missing:
                     self.add_finding(Finding(
                         id="AUTH-006",

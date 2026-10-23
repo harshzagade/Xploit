@@ -31,22 +31,25 @@ class BaseModule:
     def add_finding(self, finding: Finding):
         # Every finding passes the provenance gate before it is recorded:
         # verified only with replayable proof, never on prose alone.
-        from ..scanner import gate_finding
+        from ..scanner import gate_finding, finding_dedupe_key
         gate_finding(finding)
-        key = (finding.category, finding.url, finding.parameter, finding.name)
-        # Scanner-level dedup across modules: skip if another module already
-        # reported this exact finding (same id, url, parameter).
-        xkey = (finding.id, finding.url, finding.parameter or "")
+        # One canonical key for both the module-local and the scanner-wide
+        # sets: the same (id, URL, parameter) is one finding no matter which
+        # module or HTTP method found it. The URL is normalized
+        # (query/fragment/host-case/default-port/trailing-slash insensitive),
+        # so a GET hit on the crawled page URL and a POST hit on the bare
+        # form action collapse into a single report row instead of two.
+        key = finding_dedupe_key(finding)
         # The probe phase fans out across threads (WebScanner.map_probes), so
         # the dedupe check-and-add must be atomic — otherwise two threads can
         # both pass the check and record the same finding twice.
         with self.scanner._lock:
             if key in self._dedupe:
                 return
-            if xkey in self.scanner._finding_keys:
+            if key in self.scanner._finding_keys:
                 return
             self._dedupe.add(key)
-            self.scanner._finding_keys.add(xkey)
+            self.scanner._finding_keys.add(key)
             self.scanner.findings.append(finding)
             self.findings_added += 1
         if self.scanner.on_finding:

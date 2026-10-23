@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Added
+- Finding dedupe key: the same (id, URL, parameter) finding is now reported
+  once across GET and POST instead of twice. The dedupe key
+  (`finding_dedupe_key()` in scanner.py) normalizes the URL — query string,
+  fragment, host case, default ports, and trailing-slash noise are folded
+  away — so a GET hit on the crawled page URL and a POST hit on the bare
+  form action collapse into one report row (first reporter wins; the HTTP
+  method is deliberately excluded from the key). Both the module-local and
+  the scanner-wide dedupe sets now use this single canonical key (previously
+  two inconsistent ad-hoc tuples), and auth_advanced's COOK-flag suppression
+  lookup normalizes its comparison URL the same way.
+  `tests/test_finding_dedupe.py` (18 tests) covers GET/POST collapse,
+  normalization variants, non-collapse cases, malformed-URL safety, and the
+  suppression lookup.
 - Open-redirect payload coverage: `next`/`url`/`redirect`/`return`/`dest`
   parameters are now probed with a 6-form bypass family (standard,
   protocol-relative `//host`, backslash `\\/\\/host`, percent-encoded

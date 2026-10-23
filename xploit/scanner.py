@@ -353,6 +353,37 @@ def _netloc_key(parsed) -> str:
     if port is None or default:
         return host
     return f"{host}:{port}"
+
+
+def normalize_dedupe_url(url: str) -> str:
+    """Canonical URL form for finding-dedupe keys.
+
+    A GET hit on the crawled page URL (``http://x/search?q=a``) and a POST
+    hit on the bare form action (``http://x/search``) are the same logical
+    target, so the query string, fragment, host case, default ports, and
+    trailing-slash noise are all folded away here. Only dedupe keys use
+    this form — the finding's own ``url`` is left untouched for the report.
+    Unparseable input falls back to the raw string so dedupe can never
+    crash a scan.
+    """
+    try:
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return url
+        path = parsed.path.rstrip("/") or ""
+        return f"{parsed.scheme.lower()}://{_netloc_key(parsed)}{path}"
+    except (ValueError, TypeError):
+        return url
+
+
+def finding_dedupe_key(finding: "Finding") -> tuple:
+    """Canonical dedupe key for a finding: (id, normalized URL, parameter).
+
+    The HTTP method is deliberately excluded — the same vulnerability found
+    via both GET and POST is one finding, reported once (first reporter
+    wins; its method is what the report shows).
+    """
+    return (finding.id, normalize_dedupe_url(finding.url), finding.parameter or "")
 def same_origin(url: str, root: str) -> bool:
     """True when ``url`` shares ``root``'s scheme and (case-insensitive)
     host-with-port. Default ports are stripped, so ``https://a:443`` matches
