@@ -16,6 +16,14 @@
   `tests/test_finding_dedupe.py` (18 tests) covers GET/POST collapse,
   normalization variants, non-collapse cases, malformed-URL safety, and the
   suppression lookup.
+- Per-host connection pool tuning: the urllib3 `HTTPAdapter` is now created
+  with `pool_connections`/`pool_maxsize` scaled from the thread count
+  (`max(10, threads)`) instead of the fixed 10/10 defaults, so high-thread
+  scans reuse keep-alive connections instead of churning TCP+TLS handshakes
+  against a too-small pool. Low thread counts keep the urllib3 defaults
+  (never shrunk). The `--threads` help text documents the effect.
+  `tests/test_pool_sizing.py` (4 tests) covers default preservation,
+  high-thread scaling, the no-shrink floor, and http/https adapter parity.
 - Open-redirect payload coverage: `next`/`url`/`redirect`/`return`/`dest`
   parameters are now probed with a 6-form bypass family (standard,
   protocol-relative `//host`, backslash `\\/\\/host`, percent-encoded

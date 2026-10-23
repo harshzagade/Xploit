@@ -77,7 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--threads", type=int, default=5,
                         help="concurrency for crawling and probe requests "
                              "(default: 5; raise for faster scans on responsive "
-                             "targets)")
+                             "targets). Also sizes the per-host connection pool, "
+                             "so high thread counts reuse keep-alive connections "
+                             "instead of churning TCP+TLS handshakes.")
     parser.add_argument("--parallel-modules", type=int, default=4, metavar="N",
                         help="run up to N scan modules concurrently side by side "
                              "on the same terminal (default: 4; 1 = sequential). "

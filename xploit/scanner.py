@@ -580,7 +580,16 @@ class WebScanner:
             status_forcelist=[429, 502, 503, 504],
             allowed_methods=["HEAD", "GET", "OPTIONS"]
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+        adapter = HTTPAdapter(
+            max_retries=retry_strategy,
+            # Scale the urllib3 connection pool with --threads: the pool
+            # defaults (10 conns/host) otherwise cap keep-alive reuse on
+            # high-thread scans, forcing needless TCP+TLS handshakes while
+            # threads sit on a too-small pool. Never shrink below the
+            # urllib3 defaults for low thread counts.
+            pool_connections=max(10, self.threads),
+            pool_maxsize=max(10, self.threads),
+        )
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         

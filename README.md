@@ -318,7 +318,10 @@ options:
   --scope-prefix SCOPE_PREFIX
                         restrict crawling to a path prefix
   --threads THREADS     concurrent crawler workers (default: 5; raise for
-                        faster crawls on responsive targets)
+                        faster crawls on responsive targets). Also sizes the
+                        per-host connection pool, so high thread counts reuse
+                        keep-alive connections instead of churning TCP+TLS
+                        handshakes.
   --parallel-modules N  run up to N scan modules concurrently side by side
                         on the same terminal (default: 4; 1 = sequential).
                         Each module already fans its own probes over --threads,
