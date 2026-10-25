@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Added
+- CSRF token detection now covers PUT, PATCH, and DELETE forms, not just
+  POST: any state-changing form method without a CSRF token field is
+  flagged as CSRF-001 (GET forms and lone search fields are still
+  skipped). `tests/test_csrf_methods.py` covers the new methods, the
+  GET skip, and the token-present case.
+- Version-fingerprint header findings (`Server:`, `X-Powered-By:`,
+  `X-AspNet-Version:`) are now collapsed to one report row per (host,
+  header, value) across all crawled pages instead of one row per URL —
+  and banners served only on sub-pages are now found too (previously
+  only the root page was checked). The evidence counts the pages that
+  repeated the banner. `tests/test_header_collapse.py` covers the
+  collapse, the sub-page-only case, and distinct values staying
+  separate.
 - Finding dedupe key: the same (id, URL, parameter) finding is now reported
   once across GET and POST instead of twice. The dedupe key
   (`finding_dedupe_key()` in scanner.py) normalizes the URL — query string,

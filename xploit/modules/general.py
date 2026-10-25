@@ -41,21 +41,45 @@ class GeneralModule(BaseModule):
             "x-powered-by": "INFO-XPB",
             "x-aspnet-version": "INFO-ASP",
         }
-        for header in ("server", "x-powered-by", "x-aspnet-version"):
-            value = headers.get(header)
-            if value:
-                self.add_finding(Finding(
-                    id=tech_header_ids[header],
-                    name="Technology Header Disclosure",
-                    category="Information Disclosure",
-                    severity=LOW,
-                    confidence="High",
-                    url=res.url,
-                    evidence=f"{header}: {value}",
-                    impact="Version or framework banners help attackers fingerprint the stack and prioritize targeted checks.",
-                    remediation="Suppress unnecessary technology/version headers at the application or reverse proxy.",
-                    cwe="CWE-200"
-                ))
+        # Version-fingerprint headers are a property of the host, not of a
+        # single URL: the same banner on fifty crawled pages used to mean
+        # fifty report rows (or, when only the root page was checked, a
+        # banner served only on sub-pages was missed entirely). Sweep every
+        # crawled page, but collapse to one finding per (host, header,
+        # value) — the first page carrying it is the finding URL, and the
+        # evidence counts how many pages repeated it.
+        from urllib.parse import urlparse
+        grouped: dict[tuple[str, str, str], list] = {}
+        for page_url, page_res in self.scanner.pages.items():
+            if page_res is None:
+                continue
+            page_headers = {k.lower(): v for k, v in page_res.headers.items()}
+            host = urlparse(page_url).netloc.lower()
+            for header in ("server", "x-powered-by", "x-aspnet-version"):
+                value = page_headers.get(header)
+                if not value:
+                    continue
+                key = (host, header, value)
+                if key in grouped:
+                    grouped[key][1] += 1
+                else:
+                    grouped[key] = [page_url, 1]
+        for (host, header, value), (first_url, count) in grouped.items():
+            evidence = f"{header}: {value}"
+            if count > 1:
+                evidence += f" (seen on {count} pages on {host})"
+            self.add_finding(Finding(
+                id=tech_header_ids[header],
+                name="Technology Header Disclosure",
+                category="Information Disclosure",
+                severity=LOW,
+                confidence="High",
+                url=first_url,
+                evidence=evidence,
+                impact="Version or framework banners help attackers fingerprint the stack and prioritize targeted checks.",
+                remediation="Suppress unnecessary technology/version headers at the application or reverse proxy.",
+                cwe="CWE-200"
+            ))
 
     def _check_session_cookies(self):
         import re
