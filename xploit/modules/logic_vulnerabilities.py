@@ -67,22 +67,29 @@ class LogicVulnerabilityModule(BaseModule):
         self._check_csrf()
         self._check_open_redirect()
 
+    # GET forms are read-only by convention and a lone search field is not
+    # state-changing, so neither is flagged; every other method can mutate
+    # server state, and a missing token on any of them is the same hole
+    # the POST-only check used to miss on PUT/PATCH/DELETE forms.
+    _STATE_CHANGING_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+
     def _check_csrf(self):
         for form in self.scanner.forms:
-            if form.method == "POST":
-                # Check if it looks like a state-changing form (has more than just a search field)
-                if len(form.inputs) <= 1 and any("search" in n.lower() for n in form.inputs):
-                    continue
+            if form.method not in self._STATE_CHANGING_METHODS:
+                continue
+            # Check if it looks like a state-changing form (has more than just a search field)
+            if len(form.inputs) <= 1 and any("search" in n.lower() for n in form.inputs):
+                continue
 
-                if not _has_csrf_token(form.inputs):
-                    self.add_finding(Finding(
-                        id="CSRF-001", name="State-Changing POST Form Missing Anti-CSRF Token",
-                        category="Cross-Site Request Forgery (CSRF)", severity="MEDIUM", confidence="Medium",
-                        url=form.action, method="POST",
-                        evidence="POST form lacks common CSRF token names in its input fields.",
-                        impact="If the application relies solely on cookies for authentication and lacks other CSRF defenses (like custom headers), attackers may be able to perform actions on behalf of the user.",
-                        remediation="Implement unique, per-session CSRF tokens for all state-changing requests.", cwe="CWE-352"
-                    ))
+            if not _has_csrf_token(form.inputs):
+                self.add_finding(Finding(
+                    id="CSRF-001", name="State-Changing Form Missing Anti-CSRF Token",
+                    category="Cross-Site Request Forgery (CSRF)", severity="MEDIUM", confidence="Medium",
+                    url=form.action, method=form.method,
+                    evidence=f"{form.method} form lacks common CSRF token names in its input fields.",
+                    impact="If the application relies solely on cookies for authentication and lacks other CSRF defenses (like custom headers), attackers may be able to perform actions on behalf of the user.",
+                    remediation="Implement unique, per-session CSRF tokens for all state-changing requests.", cwe="CWE-352"
+                ))
 
     def _check_open_redirect(self):
         payload_netloc = urlparse(OPEN_REDIRECT_PAYLOADS[0][1]).netloc.lower()
