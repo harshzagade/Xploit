@@ -7,6 +7,10 @@
   are given, `--max-depth` wins, so there is exactly one effective depth
   per run. `tests/test_max_depth.py` covers the alias, the precedence,
   and hand-built namespaces that predate the flag.
+- LDAP-001 retest coverage: `tests/test_ldap_retest.py` proves the
+  generic `--retest` pass replays LDAP findings (GET confirmed/fixed,
+  blocked replay unverifiable, POST form-data round-trip, passive skip) —
+  the module already attached replayable proof, but no test covered it.
 - CSRF token detection now covers PUT, PATCH, and DELETE forms, not just
   POST: any state-changing form method without a CSRF token field is
   flagged as CSRF-001 (GET forms and lone search fields are still
