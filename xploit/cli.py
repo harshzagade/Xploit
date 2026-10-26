@@ -66,6 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="additional target URLs — all targets are scanned "
                              "concurrently in one run")
     parser.add_argument("--depth", type=int, default=4, help="crawl depth (default: 4)")
+    parser.add_argument("--max-depth", type=int, default=None, metavar="DEPTH",
+                        help="alias for --depth: crawl depth; overrides --depth when given")
     parser.add_argument("--max-pages", type=int, default=500, help="maximum pages to crawl (default: 500)")
     parser.add_argument("--timeout", type=float, default=6.0, help="HTTP timeout per request in seconds (default: 6)")
     parser.add_argument("--mode", choices=(PASSIVE, ACTIVE, FULL), default=FULL, help="scan mode: passive, active, or full")
@@ -128,11 +130,22 @@ def target_list(args: argparse.Namespace) -> list[str]:
     return [args.url] + list(getattr(args, "extra_urls", None) or [])
 
 
+def effective_depth(args: argparse.Namespace) -> int:
+    """Crawl depth for a run: `--max-depth` wins over `--depth` when given.
+
+    Namespaces built by hand (tests, embedders, the interactive prompt)
+    may predate the `--max-depth` flag, so a missing attribute means
+    "not given", never an error.
+    """
+    max_depth = getattr(args, "max_depth", None)
+    return max_depth if max_depth is not None else args.depth
+
+
 def _build_scanner(args: argparse.Namespace, target_url: str) -> WebScanner:
     """Construct a configured WebScanner. Raises ValueError on bad input."""
     scanner = WebScanner(
         target_url,
-        depth=args.depth,
+        depth=effective_depth(args),
         max_pages=args.max_pages,
         timeout=args.timeout,
         mode=args.mode,
@@ -296,7 +309,7 @@ def _run_single_target(args: argparse.Namespace, target_url: str) -> int:
         _r = RESET if colors else ""
         _b = BOLD if colors else ""
         print(f"  {_d}target{_r}  {_b}{target_url}{_r}")
-        print(f"  {_d}mode{_r}    {args.mode} · depth {args.depth} · "
+        print(f"  {_d}mode{_r}    {args.mode} · depth {effective_depth(args)} · "
               f"{args.max_pages} pages · {args.timeout:g}s timeout")
         print("")
 

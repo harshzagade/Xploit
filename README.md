@@ -307,6 +307,8 @@ options:
   -h, --help            show this help message and exit
   -v, --version         show program's version number and exit
   --depth DEPTH         crawl depth (default: 4)
+  --max-depth DEPTH     alias for --depth: crawl depth; overrides --depth
+                        when given
   --max-pages MAX_PAGES maximum pages to crawl (default: 500)
   --timeout TIMEOUT     HTTP timeout per request in seconds (default: 6)
   --mode {passive,active,full}
