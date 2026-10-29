@@ -45,6 +45,15 @@
   (never shrunk). The `--threads` help text documents the effect.
   `tests/test_pool_sizing.py` (4 tests) covers default preservation,
   high-thread scaling, the no-shrink floor, and http/https adapter parity.
+- `--proxy URL`: route all scan traffic through an HTTP/HTTPS proxy
+  (Burp-style local intercept) via the requests session — previously no
+  proxy support existed at all. A bare `host:port` is treated as
+  `http://host:port`, credentials in the URL are preserved, and bad values
+  (non-http(s) scheme, no host, bad port, blank) fail fast at scanner
+  construction via `scanner.parse_proxy_url`. The session mapping applies
+  to every request including manual redirect hops in `_request`.
+  `tests/test_proxy_flag.py` (19 tests) covers parser wiring, normalization,
+  credential preservation, fail-fast validation, and session application.
 - `--user-agent STRING`: the CLI now exposes the `WebScanner(user_agent=...)`
   knob that already existed but was never wired through — a custom UA is
   sent on every request, defaulting to the previous Chrome 125 string

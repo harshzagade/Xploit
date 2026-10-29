@@ -340,6 +340,10 @@ options:
   --retest              re-fire each finding's proof request to confirm it
                         still reproduces (active traffic; skipped in passive
                         mode)
+  --proxy URL           route all scan traffic through an HTTP/HTTPS proxy
+                        (e.g. http://127.0.0.1:8080 for a Burp-style local
+                        intercept); a bare host:port is treated as
+                        http://host:port
   --user-agent STRING   send this User-Agent header on every request
                         (default: a Chrome 125 UA string); a --header
                         'User-Agent: ...' override still wins

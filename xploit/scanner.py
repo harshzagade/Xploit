@@ -389,6 +389,39 @@ def finding_dedupe_key(finding: "Finding") -> tuple:
     wins; its method is what the report shows).
     """
     return (finding.id, normalize_dedupe_url(finding.url), finding.parameter or "")
+def parse_proxy_url(raw: str | None) -> dict[str, str] | None:
+    """Normalize a --proxy value to the ``{"http": ..., "https": ...}``
+    mapping ``requests`` expects for a session.
+
+    A bare ``host:port`` is treated as ``http://host:port`` (the Burp-style
+    local-intercept spelling). Only http/https proxies are accepted, and a
+    value with no host (or an unparseable port) fails fast at scanner
+    construction instead of mid-scan. Proxy credentials in the URL
+    (``http://user:pass@host:port``) are preserved verbatim — callers must
+    not log the normalized value. Returns None when no proxy was given.
+    """
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        raise ValueError("proxy must be a non-empty URL")
+    if "://" not in value:
+        value = f"http://{value}"
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError(
+            f"proxy scheme must be http or https, got {parsed.scheme!r}")
+    try:
+        host = parsed.hostname
+        _port = parsed.port  # raises ValueError on an out-of-range port
+    except ValueError as exc:
+        raise ValueError(f"invalid proxy URL {raw!r}: {exc}") from exc
+    if not host:
+        raise ValueError(f"invalid proxy URL {raw!r}: no host")
+    normalized = urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+    return {"http": normalized, "https": normalized}
+
+
 def same_origin(url: str, root: str) -> bool:
     """True when ``url`` shares ``root``'s scheme and (case-insensitive)
     host-with-port. Default ports are stripped, so ``https://a:443`` matches
@@ -519,6 +552,7 @@ class WebScanner:
         verify: bool = True,
         read_deadline: float | None = None,
         jitter: float = 0.0,
+        proxy: str | None = None,
     ) -> None:
         self.target = target
         self.root = normalize_url(target)
@@ -556,6 +590,12 @@ class WebScanner:
         if not user_agent.strip():
             raise ValueError("user_agent must be a non-empty string")
         self.user_agent = user_agent
+        # Proxy routing (--proxy): validated eagerly via parse_proxy_url
+        # so a bad value fails at construction, not mid-scan. Stored as
+        # the requests session mapping; the session applies it to every
+        # request, including manual redirect hops in _request.
+        self.proxies = parse_proxy_url(proxy) or {}
+        self.proxy = self.proxies.get("http")
         if read_deadline is not None and read_deadline <= 0:
             raise ValueError("read_deadline must be positive")
         if jitter < 0:
@@ -606,6 +646,9 @@ class WebScanner:
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
         
+        if self.proxies:
+            self.session.proxies.update(self.proxies)
+
         self.session.headers.update({"User-Agent": user_agent})
         
         self.findings: list[Finding] = []

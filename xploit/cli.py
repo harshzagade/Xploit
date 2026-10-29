@@ -99,6 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--format", choices=("text", "json"), default="text", help="output format")
     parser.add_argument("--output", metavar="PATH", default=None, help="write the report to a file (ANSI colors stripped)")
     parser.add_argument("--retest", action="store_true", help="re-fire each finding's proof request to confirm it still reproduces (active traffic; skipped in passive mode)")
+    parser.add_argument("--proxy", default=None, metavar="URL",
+                        help="route all scan traffic through an HTTP/HTTPS "
+                             "proxy (e.g. http://127.0.0.1:8080 for a "
+                             "Burp-style local intercept); a bare host:port "
+                             "is treated as http://host:port")
     parser.add_argument("--user-agent", default=None, metavar="STRING",
                         help="send this User-Agent header on every request "
                              "(default: a Chrome 125 UA string); a "
@@ -166,6 +171,8 @@ def _build_scanner(args: argparse.Namespace, target_url: str) -> WebScanner:
         # interactive prompt) may predate the --user-agent flag; None
         # means WebScanner's default UA.
         user_agent=getattr(args, "user_agent", None),
+        # getattr: Namespaces built by hand may predate the --proxy flag.
+        proxy=getattr(args, "proxy", None),
         verify=not args.insecure,
     )
     apply_request_overrides(scanner, args.header, args.cookie)
@@ -495,6 +502,7 @@ def build_interactive_args(input_fn=input) -> argparse.Namespace:
         output=None,
         retest=False,
         user_agent=None,
+        proxy=None,
         header=[],
         cookie=[],
         insecure=False,
