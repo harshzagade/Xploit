@@ -45,6 +45,14 @@
   (never shrunk). The `--threads` help text documents the effect.
   `tests/test_pool_sizing.py` (4 tests) covers default preservation,
   high-thread scaling, the no-shrink floor, and http/https adapter parity.
+- `--user-agent STRING`: the CLI now exposes the `WebScanner(user_agent=...)`
+  knob that already existed but was never wired through — a custom UA is
+  sent on every request, defaulting to the previous Chrome 125 string
+  (`scanner.DEFAULT_USER_AGENT`). A `--header "User-Agent: ..."` override
+  applied after construction still wins, and a blank UA fails fast at
+  scanner construction. `tests/test_user_agent_flag.py` (9 tests) covers
+  parser defaults/wiring, the scanner default, None-means-default for
+  hand-built Namespaces, blank rejection, and header-override precedence.
 - Open-redirect payload coverage: `next`/`url`/`redirect`/`return`/`dest`
   parameters are now probed with a 6-form bypass family (standard,
   protocol-relative `//host`, backslash `\\/\\/host`, percent-encoded

@@ -99,6 +99,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--format", choices=("text", "json"), default="text", help="output format")
     parser.add_argument("--output", metavar="PATH", default=None, help="write the report to a file (ANSI colors stripped)")
     parser.add_argument("--retest", action="store_true", help="re-fire each finding's proof request to confirm it still reproduces (active traffic; skipped in passive mode)")
+    parser.add_argument("--user-agent", default=None, metavar="STRING",
+                        help="send this User-Agent header on every request "
+                             "(default: a Chrome 125 UA string); a "
+                             "--header 'User-Agent: ...' override still wins")
     parser.add_argument("--header", action="append", default=[], metavar="NAME: VALUE", help="add a custom HTTP header; may be repeated")
     parser.add_argument("--cookie", action="append", default=[], metavar="NAME=VALUE", help="add a cookie; may be repeated")
     parser.add_argument("--insecure", action="store_true", help="disable SSL certificate verification")
@@ -158,6 +162,10 @@ def _build_scanner(args: argparse.Namespace, target_url: str) -> WebScanner:
         # getattr: Namespaces built by hand (tests, embedders) may predate
         # the --modules flag.
         modules=getattr(args, "modules", None) or None,
+        # getattr: Namespaces built by hand (tests, embedders, the
+        # interactive prompt) may predate the --user-agent flag; None
+        # means WebScanner's default UA.
+        user_agent=getattr(args, "user_agent", None),
         verify=not args.insecure,
     )
     apply_request_overrides(scanner, args.header, args.cookie)
@@ -486,6 +494,7 @@ def build_interactive_args(input_fn=input) -> argparse.Namespace:
         format="text",
         output=None,
         retest=False,
+        user_agent=None,
         header=[],
         cookie=[],
         insecure=False,

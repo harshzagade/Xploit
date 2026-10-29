@@ -68,6 +68,11 @@ PASSIVE = "passive"
 ACTIVE = "active"
 FULL = "full"
 
+# Default User-Agent sent on every request unless WebScanner(user_agent=...)
+# or the CLI --user-agent flag overrides it. A --header "User-Agent: ..."
+# override applied after construction still wins (see cli._build_scanner).
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+
 @dataclass(slots=True)
 class Finding:
     """One vulnerability finding.
@@ -510,7 +515,7 @@ class WebScanner:
         threads: int = 5,
         parallel_modules: int = 4,
         modules: str | list[str] | None = None,
-        user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+        user_agent: str | None = DEFAULT_USER_AGENT,
         verify: bool = True,
         read_deadline: float | None = None,
         jitter: float = 0.0,
@@ -543,6 +548,14 @@ class WebScanner:
         if modules is not None and not self.modules:
             raise ValueError("--modules requires at least one module name")
         self.verify = verify
+        # None (e.g. a hand-built CLI Namespace that predates --user-agent)
+        # means "the default"; an empty/blank value fails fast instead of
+        # silently sending a blank User-Agent header.
+        if user_agent is None:
+            user_agent = DEFAULT_USER_AGENT
+        if not user_agent.strip():
+            raise ValueError("user_agent must be a non-empty string")
+        self.user_agent = user_agent
         if read_deadline is not None and read_deadline <= 0:
             raise ValueError("read_deadline must be positive")
         if jitter < 0:

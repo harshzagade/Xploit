@@ -340,6 +340,9 @@ options:
   --retest              re-fire each finding's proof request to confirm it
                         still reproduces (active traffic; skipped in passive
                         mode)
+  --user-agent STRING   send this User-Agent header on every request
+                        (default: a Chrome 125 UA string); a --header
+                        'User-Agent: ...' override still wins
   --header NAME: VALUE  add a custom HTTP header (repeatable)
   --cookie NAME=VALUE   add a cookie (repeatable)
   --insecure            disable SSL certificate verification
