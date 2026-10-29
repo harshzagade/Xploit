@@ -8,6 +8,12 @@ class SQLInjectionModule(BaseModule):
     category = "Injection"
 
     def run(self):
+        # Shared baseline cache: (url, param, method) -> response.
+        # _test_error_based, _test_boolean_based, and _test_stacked_queries
+        # all need the same "benign submission" baseline — fetch it once
+        # and reuse to avoid 3 redundant identical requests per param.
+        self._baseline_cache: dict = {}
+
         # Probe targets concurrently — requests are I/O-bound and each
         # (url, param) chain is independent. Order of findings still follows
         # the input order via the scanner's serialized dedupe.
@@ -20,19 +26,72 @@ class SQLInjectionModule(BaseModule):
         # (?id=1&id=2) must not be silently collapsed away.
         params = [key for key, _ in parse_qsl(urlparse(url).query, keep_blank_values=True)]
         for param in params:
-            if self._test_error_based(url, param, "GET"): continue
-            if self._test_union_based(url, param, "GET"): continue
-            if self._test_boolean_based(url, param, "GET"): continue
-            if self._test_time_based(url, param, "GET"): continue
-            self._test_stacked_queries(url, param, "GET")
+            hint = getattr(self.scanner, 'param_hints', {}).get((url, "GET", param))
+            self._probe_param(url, param, "GET", None, hint)
 
     def _check_form(self, form):
+        # External form action: skip entirely — probing third-party endpoints
+        # is out of scope. Compare netloc of action vs scanner root host;
+        # empty netloc means same host (relative action).
+        action_netloc = urlparse(form.action).netloc
+        root_netloc = urlparse(self.scanner.root).netloc
+        if action_netloc and action_netloc != root_netloc:
+            return
+
+        method = form.method.upper()
         for param in form.inputs:
-            if self._test_error_based(form.action, param, form.method, form.inputs): continue
-            if self._test_union_based(form.action, param, form.method, form.inputs): continue
-            if self._test_boolean_based(form.action, param, form.method, form.inputs): continue
-            if self._test_time_based(form.action, param, form.method, form.inputs): continue
-            self._test_stacked_queries(form.action, param, form.method, form.inputs)
+            hint = getattr(self.scanner, 'param_hints', {}).get(
+                (form.action, method, param))
+            self._probe_param(form.action, param, form.method, form.inputs, hint)
+
+    def _probe_param(self, url, param, method, base_data, hint):
+        """Run the technique chain for one (url, param, method) target.
+
+        hint=None or hint['changes']=True  ->  full chain as before.
+        hint exists and hint['changes']=False  ->  reduced chain:
+          run error-based as usual; skip union and stacked;
+          run time-based in reduced mode (first payload only).
+          boolean is also skipped (no response signal = boolean can't confirm).
+        """
+        if hint is not None and not hint["changes"]:
+            # Inert param: reduced chain
+            if self._test_error_based(url, param, method, base_data):
+                return
+            # Skip union, boolean, stacked — no response signal to exploit
+            self._test_time_based(url, param, method, base_data, max_payloads=1)
+        else:
+            # Full chain (no hint, or hint shows changes)
+            if self._test_error_based(url, param, method, base_data):
+                return
+            if self._test_union_based(url, param, method, base_data):
+                return
+            if self._test_boolean_based(url, param, method, base_data):
+                return
+            if self._test_time_based(url, param, method, base_data):
+                return
+            self._test_stacked_queries(url, param, method, base_data)
+
+    # -----------------------------------------------------------------------
+    # Shared baseline cache
+    # -----------------------------------------------------------------------
+
+    def _baseline(self, url, param, method, base_data=None):
+        """Fetch the baseline response for (url, param, method) once and cache.
+
+        Uses the 'sqli_baseline_xploit' sentinel so the server sees a benign
+        request the first time, then returns the cached object on subsequent
+        calls from other techniques on the same param.  _test_time_based keeps
+        its own timed baseline (it needs timing measurement).
+        """
+        # Lazily created: techniques are also called directly (tests,
+        # retest paths) without run() having initialised the cache.
+        if getattr(self, "_baseline_cache", None) is None:
+            self._baseline_cache = {}
+        key = (url, param, method.upper() if method else "GET")
+        if key not in self._baseline_cache:
+            res = self._send_payload(url, param, method, "sqli_baseline_xploit", base_data)
+            self._baseline_cache[key] = res
+        return self._baseline_cache[key]
 
     def _test_error_based(self, url, param, method, base_data=None):
         payloads = [
@@ -45,10 +104,8 @@ class SQLInjectionModule(BaseModule):
             "\" OR \"a\"=\"a",
             "') OR ('a'='a",
         ]
-        # Fresh baseline probe (not the stale crawl-time page): form actions
-        # often aren't in pages at all, and an empty baseline made ANY error
-        # string after malformed input a HIGH SQLi.
-        baseline = self._send_payload(url, param, method, "sqli_baseline_xploit", base_data)
+        # Use shared baseline (fetched once per param across techniques).
+        baseline = self._baseline(url, param, method, base_data)
         baseline_text = baseline.text.lower() if baseline else ""
 
         for payload in payloads:
@@ -102,7 +159,8 @@ class SQLInjectionModule(BaseModule):
         true_payloads  = ["' AND '1'='1", "' AND 1=1--", "') AND ('1'='1"]
         false_payloads = ["' AND '1'='2", "' AND 1=2--", "') AND ('1'='2"]
 
-        baseline = self._send_payload(url, param, method, "bool_baseline_xploit", base_data)
+        # Use shared baseline (fetched once per param across techniques).
+        baseline = self._baseline(url, param, method, base_data)
         baseline_len = len(baseline.text) if baseline else 0
 
         for true_p, false_p in zip(true_payloads, false_payloads):
@@ -129,13 +187,20 @@ class SQLInjectionModule(BaseModule):
         res = self._send_payload(url, param, method, payload, base_data)
         return res, time.monotonic() - start
 
-    def _test_time_based(self, url, param, method, base_data=None):
+    def _test_time_based(self, url, param, method, base_data=None, max_payloads=None):
         """Time-based blind SQLi: confirm via reproducible response delay.
 
         Fires DBMS-specific sleep payloads and requires the delay to reproduce
         on a second firing (differential against a fresh baseline), so a
         one-off slow response can't confirm. Attaches a timing proof, which
         the evidence gate treats as verified and --retest can re-measure.
+
+        When target_profile carries a dbms_hint for a known DBMS family,
+        only that family's payloads are fired — wasteful cross-family probes
+        (e.g. MySQL SLEEP against an IIS/ASP.NET target) are skipped.
+
+        max_payloads: when set, only the first N payloads of the selected
+        family are attempted (used by the reduced-chain path for inert params).
         """
         SLEEP_S = 4
         MARGIN_S = 1.0
@@ -144,12 +209,35 @@ class SQLInjectionModule(BaseModule):
             # The sleep wouldn't fit inside the request timeout — any delay
             # measurement would be cut off, so the technique can't confirm.
             return False
-        payloads = [
+
+        # DBMS-grouped payloads. Keys match the dbms_hint values from
+        # _build_target_profile: 'mysql', 'mssql', 'postgres'.
+        _mysql_payloads = [
             f"' OR SLEEP({SLEEP_S})--",    # MySQL / MariaDB
             f"' AND SLEEP({SLEEP_S})--",
+        ]
+        _mssql_payloads = [
             f"'; WAITFOR DELAY '0:0:0{SLEEP_S}'--",  # MSSQL
+        ]
+        _postgres_payloads = [
             f"' OR pg_sleep({SLEEP_S})--",  # PostgreSQL
         ]
+
+        hint = (getattr(self.scanner, "target_profile", None) or {}).get("dbms_hint", "unknown")
+        if hint == "mysql":
+            payloads = _mysql_payloads
+        elif hint == "mssql":
+            payloads = _mssql_payloads
+        elif hint == "postgres":
+            payloads = _postgres_payloads
+        else:
+            # Unknown or no hint — fire all families (original behavior).
+            payloads = _mysql_payloads + _mssql_payloads + _postgres_payloads
+
+        # Apply the per-call cap (used by reduced-chain path for inert params)
+        if max_payloads is not None:
+            payloads = payloads[:max_payloads]
+
         base_res, base_dt = self._timed_payload(
             url, param, method, "sqli_baseline_xploit", base_data)
         if base_res is None:
@@ -175,11 +263,17 @@ class SQLInjectionModule(BaseModule):
         return False
 
     def _test_stacked_queries(self, url, param, method, base_data=None):
-        payloads = [
-            "'; EXEC sp_MSforeachtable 'SELECT 1'--",
-            "1; SELECT COUNT(*) FROM information_schema.tables--",
-        ]
-        baseline = self._send_payload(url, param, method, "sqli_baseline_xploit", base_data)
+        hint = (getattr(self.scanner, "target_profile", None) or {}).get("dbms_hint", "unknown")
+        # EXEC sp_MSforeachtable is MSSQL-only; skip it when the target is
+        # fingerprinted as a different DBMS. information_schema is generic
+        # and always fires.
+        payloads = []
+        if hint in ("mssql", "unknown"):
+            payloads.append("'; EXEC sp_MSforeachtable 'SELECT 1'--")
+        payloads.append("1; SELECT COUNT(*) FROM information_schema.tables--")
+
+        # Use shared baseline (fetched once per param across techniques).
+        baseline = self._baseline(url, param, method, base_data)
         baseline_text = baseline.text.lower() if baseline else ""
 
         for payload in payloads:

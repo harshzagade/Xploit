@@ -2,6 +2,28 @@ from __future__ import annotations
 from .base import BaseModule
 from ..scanner import Finding, HIGH, MEDIUM, LOW, INFO, PASSIVE, normalize_path
 
+# Fallback binary-extension check used by _check_cors when the scanner does
+# not expose is_binary_asset (e.g. in lightweight test stubs). Mirrors the
+# BINARY_ASSET_EXTS set in scanner.py without importing it so this module
+# has no hard dependency on that constant.
+_BINARY_EXTS_FALLBACK = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp",
+    ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    ".mp4", ".mp3", ".webm", ".wav",
+    ".pdf", ".zip", ".gz",
+})
+
+def _ext_is_binary(url: str) -> bool:
+    """Return True if the URL path ends with a known binary-asset extension."""
+    from urllib.parse import urlparse
+    try:
+        path = urlparse(url).path
+        segment = path.rsplit("/", 1)[-1]
+        ext = f".{segment.rsplit('.', 1)[-1].lower()}" if "." in segment else ""
+        return ext in _BINARY_EXTS_FALLBACK
+    except (ValueError, AttributeError):
+        return False
+
 class GeneralModule(BaseModule):
     name = "General Security"
     category = "General"
@@ -231,21 +253,65 @@ class GeneralModule(BaseModule):
                 ))
 
     def _check_cors(self):
+        import threading
         origin = "https://evil.example"
         # One probe per path shape — the crawler stores /item?id=1 and
         # /item?id=2 as separate pages, but CORS policy is per endpoint.
+        # Binary assets (images, fonts, media) are also skipped: they carry
+        # no session context worth testing for CORS misconfiguration, and
+        # probing them inflates the request count for no finding value.
         # Shapes are filtered sequentially first (cheap, deterministic),
         # then the actual probes fan out concurrently.
         seen_shapes: set[str] = set()
         probe_urls: list[str] = []
         for url in self.scanner.pages:
+            # Skip binary assets — use the scanner helper when available,
+            # fall back to extension check only (for test stubs that don't
+            # expose pages as Response objects).
+            page_res = self.scanner.pages.get(url)
+            _is_binary = (
+                self.scanner.is_binary_asset(url, page_res)
+                if callable(getattr(self.scanner, "is_binary_asset", None))
+                else _ext_is_binary(url)
+            )
+            if _is_binary:
+                continue
             shape = normalize_path(url)
             if shape in seen_shapes:
                 continue
             seen_shapes.add(shape)
             probe_urls.append(url)
         self._cors_origin = origin
+        # Thread-safe accumulator for (url, severity, confidence, evidence, impact) hits.
+        self._cors_hits: list[tuple[str, str, str, str, str]] = []
+        self._cors_hits_lock = threading.Lock()
         self.scanner.map_probes(self._check_cors_url, probe_urls)
+
+        # --- Group hits by (host, severity) and emit one Finding per group ---
+        from urllib.parse import urlparse
+        groups: dict[tuple[str, str], list[tuple[str, str, str, str, str]]] = {}
+        for hit in self._cors_hits:
+            url, severity, confidence, evidence, impact = hit
+            host = urlparse(url).netloc.lower()
+            key = (host, severity)
+            groups.setdefault(key, []).append(hit)
+
+        for (host, severity), hits in sorted(groups.items()):
+            # Sort hits deterministically by URL so the "first URL" is stable.
+            hits_sorted = sorted(hits, key=lambda h: h[0])
+            first_url, _, confidence, evidence, impact = hits_sorted[0]
+            n = len(hits_sorted)
+            if n > 1:
+                paths = sorted({urlparse(h[0]).path for h in hits_sorted})
+                sample = paths[:5]
+                suffix = "…" if len(paths) > 5 else ""
+                evidence = evidence + f" — observed on {n} endpoint(s): " + ", ".join(sample) + suffix
+            self.add_finding(Finding(
+                id="CORS-001", name="Permissive CORS Policy",
+                category="CORS Misconfiguration", severity=severity, confidence=confidence,
+                url=first_url, evidence=evidence, impact=impact,
+                remediation="Restrict Origin allowlist.", cwe="CWE-942"
+            ))
 
     def _check_cors_url(self, url):
         origin = self._cors_origin
@@ -274,9 +340,5 @@ class GeneralModule(BaseModule):
             impact = "Any origin is reflected, so non-credentialed cross-origin reads are permitted from attacker sites."
         else:
             return
-        self.add_finding(Finding(
-            id="CORS-001", name="Permissive CORS Policy",
-            category="CORS Misconfiguration", severity=severity, confidence=confidence,
-            url=url, evidence=evidence, impact=impact,
-            remediation="Restrict Origin allowlist.", cwe="CWE-942"
-        ))
+        with self._cors_hits_lock:
+            self._cors_hits.append((url, severity, confidence, evidence, impact))

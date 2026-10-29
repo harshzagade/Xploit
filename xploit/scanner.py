@@ -73,6 +73,24 @@ FULL = "full"
 # override applied after construction still wins (see cli._build_scanner).
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
+# File extensions that are known binary/media assets. URLs with these
+# extensions are never enqueued for crawling and their fetched responses are
+# not stored in scanner.pages — they carry no injection entry points and
+# storing them wastes memory. Extensions are lower-cased for comparison.
+BINARY_ASSET_EXTS: frozenset[str] = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".bmp",
+    ".woff", ".woff2", ".ttf", ".eot", ".otf",
+    ".mp4", ".mp3", ".webm", ".wav",
+    ".pdf", ".zip", ".gz",
+})
+
+# Content-Type prefixes that identify binary/media responses regardless of
+# the URL extension. text/* and application/javascript are NOT in this set.
+_BINARY_CT_PREFIXES: tuple[str, ...] = (
+    "image/", "font/", "audio/", "video/",
+    "application/octet-stream", "application/pdf", "application/zip",
+)
+
 @dataclass(slots=True)
 class Finding:
     """One vulnerability finding.
@@ -210,6 +228,9 @@ class ScanResult:
     # --modules selection (canonical registry keys) that restricted this
     # scan's module fan-out; empty means every mode-appropriate module ran.
     modules: list[str] = field(default_factory=list)
+    # Target fingerprint derived from crawled page headers/paths after the
+    # crawl phase. See WebScanner._build_target_profile for the key schema.
+    target_profile: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         """Serialize the result for JSON reports, including the computed
@@ -234,6 +255,8 @@ class ScanResult:
             "summary": summary,
             "total_findings": len(self.findings),
             "verified_findings": sum(1 for f in self.findings if f.verified),
+            "unique_issue_count": len({f.id for f in self.findings}),
+            "target_profile": self.target_profile,
         }
 
 # Registry of scan modules selectable via --modules / WebScanner(modules=...).
@@ -499,6 +522,48 @@ def normalize_path(url: str) -> str:
     query = urlencode([(key, "") for key in query_keys])
     return urlunparse(parsed._replace(path='/'.join(normalized_parts), query=query, fragment=""))
 
+def is_binary_asset(url: str, res=None) -> bool:
+    """Return True when *url* or *res* represents a binary/media asset.
+
+    Decision order:
+    1. If a response object is provided, its Content-Type header is checked
+       first. A Content-Type of text/html, text/*, application/json, or
+       application/javascript is never considered binary (False). A prefix
+       in _BINARY_CT_PREFIXES returns True.
+    2. Fall through to the URL path extension: if the lowercase extension is
+       in BINARY_ASSET_EXTS, return True.
+    3. Otherwise return False.
+
+    ``res`` may be None (for pre-fetch URL checks) or any object with a
+    ``headers`` dict-like attribute (requests.Response or the Resp test stub).
+    """
+    if res is not None:
+        raw_ct: str = ""
+        # Support both requests.Response (.headers dict-like) and test stubs
+        # that carry a plain dict in .headers.
+        try:
+            raw_ct = (res.headers.get("Content-Type") or "").lower()
+        except (AttributeError, TypeError):
+            raw_ct = ""
+        if raw_ct:
+            ct = raw_ct.split(";")[0].strip()
+            # These types are never binary assets even if the extension looks bad.
+            if (ct.startswith("text/") or ct in (
+                    "application/json", "application/javascript",
+                    "application/x-javascript")):
+                return False
+            for prefix in _BINARY_CT_PREFIXES:
+                if ct.startswith(prefix):
+                    return True
+    # Fallback: extension check on the URL path.
+    try:
+        path = urlparse(url).path
+        ext = path.rsplit(".", 1)[-1].lower() if "." in path.rsplit("/", 1)[-1] else ""
+        return f".{ext}" in BINARY_ASSET_EXTS if ext else False
+    except (ValueError, AttributeError):
+        return False
+
+
 class WebScanner:
     """Configurable web vulnerability scanner.
 
@@ -533,6 +598,12 @@ class WebScanner:
     loop bound and same-origin rule so payloads never leave the origin,
     and response bodies are capped at ``MAX_BODY_BYTES``.
     """
+
+    # Modules (e.g. general.py CORS) call scanner.is_binary_asset(url, res);
+    # the implementation is the module-level function above — expose it on
+    # the class so production scanners take the Content-Type-aware path,
+    # not the extension-only fallback.
+    is_binary_asset = staticmethod(is_binary_asset)
 
     def __init__(
         self,
@@ -658,6 +729,21 @@ class WebScanner:
         self._normalized_seen: Set[str] = set()
         self._checks_run: list[str] = []
         self._last_request_at = 0.0
+        # Count of binary/media asset URLs skipped during the crawl (not
+        # stored in self.pages). Useful for reporting and diagnostics.
+        self.assets_skipped: int = 0
+        # Target fingerprint populated by _build_target_profile() after the
+        # crawl. Keys: server, powered_by, stack_hints, dbms_hint,
+        # dbms_signals, html_pages, forms, query_params,
+        # external_form_actions.
+        self.target_profile: dict = {}
+        # Param-hint pre-pass results populated by _build_param_hints() in
+        # active/full modes right after _build_target_profile(). Key:
+        # (endpoint_url, METHOD_upper, param_name). Value dict:
+        # {baseline_status, baseline_len, reflects, changes}.
+        # Modules use getattr(scanner, 'param_hints', {}) so old test fakes
+        # without this attribute keep working.
+        self.param_hints: dict = {}
         self.on_progress: Callable[[int, int, str], None] | None = None
         self.on_finding: Callable[[Finding], None] | None = None
         # Per-module lifecycle hooks, used by the parallel-module UI.
@@ -751,6 +837,9 @@ class WebScanner:
         start_time = time.monotonic()
         
         self._crawl()
+        self._build_target_profile()
+        if self.mode in {ACTIVE, FULL}:
+            self._build_param_hints()
         
         if not self.pages:
             return self._empty_result(started, start_time)
@@ -826,6 +915,7 @@ class WebScanner:
             errors=self.errors,
             exclude_patterns=list(self.exclude),
             modules=list(self.modules or []),
+            target_profile=self.target_profile,
         )
 
     # Bound for manual redirect following. requests' own default is 30, which
@@ -1032,6 +1122,287 @@ class WebScanner:
             self.errors.append(f"{method} {url}: {note}")
         return res
 
+    def _build_target_profile(self) -> None:
+        """Fingerprint the target stack from crawled page headers and URLs.
+
+        Scores DBMS evidence from four independent signals and sets
+        self.target_profile with:
+          server, powered_by, stack_hints (sorted list of human labels),
+          dbms_hint ('mssql'|'mysql'|'postgres'|'unknown'),
+          dbms_signals (list of short evidence strings),
+          html_pages, forms, query_params, external_form_actions.
+
+        Called by scan() right after _crawl() so all modules have access to
+        the profile via self.scanner.target_profile.
+        """
+        from urllib.parse import urlparse
+
+        # --- Collect representative header values across all crawled pages ---
+        server_vals: list[str] = []
+        powered_by_vals: list[str] = []
+        has_asp_version: bool = False
+
+        for page_url, page_res in self.pages.items():
+            if page_res is None:
+                continue
+            headers_lower = {k.lower(): v for k, v in page_res.headers.items()}
+            sv = headers_lower.get("server", "")
+            if sv:
+                server_vals.append(sv.lower())
+            pb = headers_lower.get("x-powered-by", "")
+            if pb:
+                powered_by_vals.append(pb.lower())
+            if "x-aspnet-version" in headers_lower:
+                has_asp_version = True
+
+        # Use the most common server/powered-by value for scoring
+        server = max(set(server_vals), key=server_vals.count) if server_vals else ""
+        powered_by = max(set(powered_by_vals), key=powered_by_vals.count) if powered_by_vals else ""
+
+        # --- URL-based signals ---
+        has_asp_path = any(
+            urlparse(u).path.lower().endswith((".asp", ".aspx"))
+            for u in self.pages
+        )
+        has_php_path = any(
+            urlparse(u).path.lower().endswith(".php")
+            for u in self.pages
+        )
+
+        # --- DBMS scoring ---
+        mssql_score = 0
+        mysql_score = 0
+        postgres_score = 0
+        signals: list[str] = []
+        stack_hints: list[str] = []
+
+        # MSSQL / IIS / ASP.NET
+        if "microsoft-iis" in server:
+            mssql_score += 1
+            signals.append("Server: Microsoft-IIS")
+        if "asp.net" in powered_by:
+            mssql_score += 1
+            signals.append("X-Powered-By: ASP.NET")
+        if has_asp_path:
+            mssql_score += 1
+            signals.append(".asp/.aspx path extension")
+        if has_asp_version:
+            mssql_score += 1
+            signals.append("X-AspNet-Version header present")
+
+        # MySQL / PHP
+        if has_php_path:
+            mysql_score += 1
+            signals.append(".php path extension")
+        if "php" in server or "php" in powered_by:
+            mysql_score += 1
+            signals.append("PHP in Server/Powered-By")
+
+        # PostgreSQL
+        if "postgres" in server or "postgres" in powered_by:
+            postgres_score += 2
+            signals.append("postgres in Server/Powered-By")
+
+        # Stack hints (human-readable labels)
+        if mssql_score >= 1:
+            if "asp.net" in powered_by or "microsoft-iis" in server:
+                stack_hints.append("ASP.NET/IIS")
+        if mysql_score >= 1:
+            stack_hints.append("PHP")
+        if postgres_score >= 1:
+            stack_hints.append("PostgreSQL")
+
+        # dbms_hint: winner must score >= 2
+        scores = {"mssql": mssql_score, "mysql": mysql_score, "postgres": postgres_score}
+        best_dbms = max(scores, key=scores.__getitem__)
+        dbms_hint = best_dbms if scores[best_dbms] >= 2 else "unknown"
+        # Only keep signals that contributed to the winning hint (if known),
+        # otherwise keep all collected signals so 'unknown' is still useful.
+        dbms_signals = signals if dbms_hint == "unknown" else [
+            s for s in signals
+            if (dbms_hint == "mssql" and s in (
+                "Server: Microsoft-IIS", "X-Powered-By: ASP.NET",
+                ".asp/.aspx path extension", "X-AspNet-Version header present"))
+            or (dbms_hint == "mysql" and s in (
+                ".php path extension", "PHP in Server/Powered-By"))
+            or (dbms_hint == "postgres" and s in ("postgres in Server/Powered-By",))
+        ]
+
+        # --- Coverage metrics ---
+        html_pages = sum(
+            1 for u, r in self.pages.items()
+            if r is not None and "text/html" in r.headers.get("Content-Type", "").lower()
+        )
+
+        query_params = len({
+            (u, k)
+            for u in self.pages
+            for k, _ in parse_qsl(urlparse(u).query, keep_blank_values=True)
+        })
+
+        root_host = urlparse(self.root).netloc.lower()
+        external_form_actions = sum(
+            1 for f in self.forms
+            if urlparse(f.action).netloc.lower() not in ("", root_host)
+        )
+
+        self.target_profile = {
+            "server": server,
+            "powered_by": powered_by,
+            "stack_hints": sorted(stack_hints),
+            "dbms_hint": dbms_hint,
+            "dbms_signals": dbms_signals,
+            "html_pages": html_pages,
+            "forms": len(self.forms),
+            "query_params": query_params,
+            "external_form_actions": external_form_actions,
+        }
+
+    _PARAM_HINT_MARKER = "xp7f3a9z"
+    _PARAM_HINT_CAP = 80
+
+    def _build_param_hints(self) -> None:
+        """Cheap shared learning pre-pass: probe each URL param / form field
+        with a benign marker to learn which parameters actually reflect or
+        change the response.  Called by scan() after _build_target_profile()
+        ONLY when mode is ACTIVE or FULL.
+
+        Results are stored in self.param_hints keyed by
+        (endpoint_url, METHOD_upper, param_name).  Modules access them via
+        self.param_hint(endpoint, method, param) or directly via
+        getattr(scanner, 'param_hints', {}).
+
+        At most _PARAM_HINT_CAP params are probed (deterministic order:
+        pages sorted, forms in crawl order) to keep the pre-pass cheap.
+        A request returning None means we record no hint for that param so
+        the module falls back to full probing.
+        """
+        MARKER = self._PARAM_HINT_MARKER
+        cap = self._PARAM_HINT_CAP
+        probed = 0
+
+        def _differs(res_a, res_b, base_len: int) -> bool:
+            if res_a is None or res_b is None:
+                return False
+            if res_a.status_code != res_b.status_code:
+                return True
+            delta = abs(len(res_b.text) - base_len)
+            return delta > max(64, 0.05 * base_len)
+
+        # --- URL query params ---
+        for url in sorted(self.pages):
+            if probed >= cap:
+                break
+            parsed = urlparse(url)
+            pairs = parse_qsl(parsed.query, keep_blank_values=True)
+            seen_params: set[str] = set()
+            for param, orig_val in pairs:
+                if probed >= cap:
+                    break
+                if param in seen_params:
+                    continue
+                seen_params.add(param)
+                # Baseline: URL as-is
+                baseline_res = self._request("GET", url, quiet=True)
+                if baseline_res is None:
+                    continue
+                baseline_status = baseline_res.status_code
+                baseline_len = len(baseline_res.text)
+                # Marker probe: replace this param with MARKER
+                marker_url = mutate_query(url, param, MARKER)
+                marker_res = self._request("GET", marker_url, quiet=True)
+                if marker_res is None:
+                    continue
+                # Quote probe: original value + single quote
+                quote_url = mutate_query(url, param, orig_val + "'")
+                quote_res = self._request("GET", quote_url, quiet=True)
+                if quote_res is None:
+                    continue
+                reflects = MARKER in (marker_res.text or "")
+                changes = (
+                    _differs(baseline_res, marker_res, baseline_len)
+                    or _differs(baseline_res, quote_res, baseline_len)
+                )
+                self.param_hints[(url, "GET", param)] = {
+                    "baseline_status": baseline_status,
+                    "baseline_len": baseline_len,
+                    "reflects": reflects,
+                    "changes": changes,
+                }
+                probed += 1
+
+        # --- Form fields ---
+        for form in self.forms:
+            if probed >= cap:
+                break
+            method = form.method.upper()
+            action = form.action
+            for param, orig_val in form.inputs.items():
+                if probed >= cap:
+                    break
+                # Baseline: submit form.inputs as-is
+                if method == "GET":
+                    baseline_res = self._request(
+                        "GET", action, params=dict(form.inputs), quiet=True)
+                else:
+                    baseline_res = self._request(
+                        "POST", action, data=dict(form.inputs), quiet=True)
+                if baseline_res is None:
+                    continue
+                baseline_status = baseline_res.status_code
+                baseline_len = len(baseline_res.text)
+                # Marker probe: this field = MARKER, siblings keep defaults
+                marker_data = dict(form.inputs)
+                marker_data[param] = MARKER
+                if method == "GET":
+                    marker_res = self._request(
+                        "GET", action, params=marker_data, quiet=True)
+                else:
+                    marker_res = self._request(
+                        "POST", action, data=marker_data, quiet=True)
+                if marker_res is None:
+                    continue
+                # Quote probe: this field = original value + single quote
+                quote_data = dict(form.inputs)
+                quote_data[param] = orig_val + "'"
+                if method == "GET":
+                    quote_res = self._request(
+                        "GET", action, params=quote_data, quiet=True)
+                else:
+                    quote_res = self._request(
+                        "POST", action, data=quote_data, quiet=True)
+                if quote_res is None:
+                    continue
+                reflects = MARKER in (marker_res.text or "")
+                changes = (
+                    _differs(baseline_res, marker_res, baseline_len)
+                    or _differs(baseline_res, quote_res, baseline_len)
+                )
+                self.param_hints[(action, method, param)] = {
+                    "baseline_status": baseline_status,
+                    "baseline_len": baseline_len,
+                    "reflects": reflects,
+                    "changes": changes,
+                }
+                probed += 1
+
+        # Record coverage counts in target_profile
+        params_inert = sum(
+            1 for h in self.param_hints.values()
+            if not h["reflects"] and not h["changes"]
+        )
+        self.target_profile["params_probed"] = len(self.param_hints)
+        self.target_profile["params_inert"] = params_inert
+
+    def param_hint(self, endpoint: str, method: str, param: str) -> dict | None:
+        """Return the hint dict for (endpoint, METHOD_upper, param) or None.
+
+        Modules should prefer this helper over direct dict access so they
+        naturally get None (= full probing) for params that were not reached
+        by the pre-pass cap or for scanner stubs in tests.
+        """
+        return self.param_hints.get((endpoint, method.upper(), param))
+
     def _crawl(self) -> None:
         """Parallelized crawler with path normalization."""
         entry_points = self._discover_entry_points()
@@ -1071,6 +1442,13 @@ class WebScanner:
                     if res is None:
                         continue
 
+                    # Binary asset: don't store in self.pages (saves memory
+                    # and keeps the injection entry-point list clean). Count
+                    # instead so diagnostics can show how many were skipped.
+                    if is_binary_asset(url, res):
+                        self.assets_skipped += 1
+                        continue
+
                     self.pages[url] = res
                     if self.on_progress:
                         self.on_progress(len(self.pages), self.max_pages, f"Crawled {urlparse(url).path or '/'}")
@@ -1092,6 +1470,12 @@ class WebScanner:
                             for raw_link in self._extract_links(res):
                                 link, _frag = urldefrag(raw_link)
                                 if not link:
+                                    continue
+                                # Skip binary assets by extension — no need to
+                                # fetch images/fonts/media; they carry no
+                                # injection entry points and bloat max_pages.
+                                if is_binary_asset(link):
+                                    self.assets_skipped += 1
                                     continue
                                 norm = normalize_path(link)
                                 if (link not in seen and norm not in self._normalized_seen
@@ -1288,4 +1672,5 @@ class WebScanner:
             "unreachable", self.mode, self.scope_prefix, 0, [], [], 0, [], self.errors,
             exclude_patterns=list(self.exclude),
             modules=list(self.modules or []),
+            target_profile=self.target_profile,
         )

@@ -87,13 +87,27 @@ class MultiVectorInjectionModule(BaseModule):
     def _check_url(self, url):
         from ..scanner import query_parameters
         for param in query_parameters(url):
+            hint = getattr(self.scanner, 'param_hints', {}).get((url, 'GET', param))
+            if hint is not None and not hint.get('changes') and not hint.get('reflects'):
+                continue
             self._test_ldap_injection(url, param, "GET")
             self._test_xml_injection(url, param, "GET")
             self._test_nosql_injection(url, param, "GET")
             self._test_ssti(url, param, "GET")
 
     def _check_form(self, form):
+        from urllib.parse import urlparse
+        # Skip forms that post to a different host — out of scope.
+        form_netloc = urlparse(form.action).netloc
+        root_netloc = urlparse(self.scanner.root).netloc
+        if form_netloc and form_netloc != root_netloc:
+            return
         for param in form.inputs:
+            endpoint = form.action
+            method_upper = form.method.upper()
+            hint = getattr(self.scanner, 'param_hints', {}).get((endpoint, method_upper, param))
+            if hint is not None and not hint.get('changes') and not hint.get('reflects'):
+                continue
             self._test_ldap_injection(form.action, param, form.method, form.inputs)
             self._test_xml_injection(form.action, param, form.method, form.inputs)
             self._test_nosql_injection(form.action, param, form.method, form.inputs)

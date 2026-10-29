@@ -74,9 +74,23 @@ class XSSModule(BaseModule):
         p = urlparse(url)
         return urlunparse((p.scheme, p.netloc, p.path, "", "", ""))
 
+    def _hint(self, endpoint, method, param):
+        """Stage 2 param hint for (endpoint, METHOD, param), or None.
+
+        None (or a fake scanner without param_hints) means full probing,
+        exactly as before Stage 2."""
+        return getattr(self.scanner, "param_hints", {}).get(
+            (endpoint, method.upper(), param))
+
     def _check_url(self, url, payload):
         from ..scanner import query_parameters
         for param in query_parameters(url):
+            hint = self._hint(url, "GET", param)
+            if hint is not None and hint.get("reflects") is False:
+                # Pre-pass marker never reflected — reflected payloads
+                # cannot land for this param. (Stored probing only runs
+                # after a reflected hit, so nothing is lost.)
+                continue
             base = self._base_url(url)
             if (base, param) in self._confirmed:
                 continue
@@ -90,8 +104,16 @@ class XSSModule(BaseModule):
                     self._check_persistence(benign_url, base, param, payload)
 
     def _check_form(self, form, payload):
+        # External form action: probing a third-party endpoint is out of
+        # scope — skip the form entirely (same rule as the SQLi module).
+        action_netloc = urlparse(form.action).netloc
+        if action_netloc and action_netloc != urlparse(self.scanner.root).netloc:
+            return
         base = self._base_url(form.action)
         for param in form.inputs:
+            hint = self._hint(form.action, form.method, param)
+            if hint is not None and hint.get("reflects") is False:
+                continue
             if (base, param) in self._confirmed:
                 continue
             data = dict(form.inputs)

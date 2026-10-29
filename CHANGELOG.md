@@ -3,6 +3,53 @@
 ## Unreleased
 
 ### Added
+- **Stage 3 — judge findings in context** (context-aware deduplication and scoping):
+  - CORS findings are now collapsed to one `CORS-001` per `(host, severity)` class
+    instead of one per probed URL; the collapsed evidence notes the endpoint count
+    and up to five sample paths, eliminating duplicate-flood reports on sites with
+    a uniform CORS policy.
+  - `ScanResult.to_dict()` now includes `unique_issue_count`: the number of distinct
+    finding IDs in the result, giving JSON consumers a quick measure of issue breadth.
+  - The Stage 2 inert-param skip (zero-signal params bypass injection probing) and the
+    external-form-action scope guard are now applied to `advanced_injection`
+    (LDAP, XML/XXE, NoSQL, SSTI) and `injection_advanced` (command injection,
+    traversal) in addition to SQLi and XSS — no hint or any signal always falls
+    back to full probing.  `tests/test_stage3_context.py` covers all new behavior.
+
+- **Stage 2 — learn during scan** (param-hint pre-pass, hint-driven skipping):
+  - `_build_param_hints()` probes each URL param / form field once with a
+    unique marker after the crawl (active/full modes, capped at 80 params)
+    and records whether it reflects input or changes the response.
+    Counts land in `target_profile` as `params_probed` / `params_inert`.
+  - SQLi: params with zero response signal run a reduced chain (error-based
+    plus one time-based payload; union/boolean/stacked skipped), and the
+    error/boolean/stacked techniques now share one cached baseline request
+    per param instead of fetching three.
+  - XSS: reflected payloads are skipped for params whose marker never
+    reflected; stored-XSS probing is unchanged.
+  - SQLi and XSS both skip forms whose action points at a different host —
+    probing third-party endpoints is out of scope.
+  - No hint (or any signal) always falls back to the full pre-Stage-2
+    probing. `tests/test_stage2_learning.py` covers the new behavior.
+
+- **Stage 1 — smart scanner** (binary-asset filtering, target profiling, DBMS-aware SQLi):
+  - Binary assets (images, fonts, media, archives) are now skipped during the
+    crawl — their links are never enqueued and their responses are never stored
+    in `pages`, cutting wasted max_pages slots and memory on asset-heavy sites.
+    A new `assets_skipped` counter tracks how many were dropped.
+  - `_build_target_profile()` fingerprints the target stack (IIS/ASP.NET,
+    PHP, PostgreSQL) from crawled headers and URL extensions. The resulting
+    `target_profile` dict (with `dbms_hint`, `dbms_signals`, and `stack_hints`)
+    is stored on the scanner and included in `ScanResult.to_dict()`.
+  - SQLi time-based probes are now DBMS-aware: when `dbms_hint` is `'mssql'`
+    only the `WAITFOR DELAY` payload fires; `'mysql'` fires only `SLEEP()`
+    payloads; `'postgres'` fires only `pg_sleep()`. `'unknown'` fires all
+    families (unchanged). The MSSQL-only `EXEC sp_MSforeachtable` stacked-
+    query payload is similarly skipped when the hint points to another DBMS.
+  - CORS probing now skips binary-asset URLs before the per-endpoint
+    shape-dedupe pass, further reducing redundant requests.
+  - `tests/test_stage1_smart.py` (40+ tests) covers all four changes.
+
 - `--max-depth DEPTH`: alias for `--depth` (crawl depth); when both flags
   are given, `--max-depth` wins, so there is exactly one effective depth
   per run. `tests/test_max_depth.py` covers the alias, the precedence,
