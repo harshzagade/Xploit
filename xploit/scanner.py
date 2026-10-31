@@ -231,6 +231,10 @@ class ScanResult:
     # Target fingerprint derived from crawled page headers/paths after the
     # crawl phase. See WebScanner._build_target_profile for the key schema.
     target_profile: dict = field(default_factory=dict)
+    # Retest tally from a `--retest` pass ({confirmed, fixed, unverifiable,
+    # skipped}); None when no retest ran, so JSON consumers can tell
+    # "not run" apart from "ran with zero findings".
+    retest_summary: dict | None = None
 
     def to_dict(self) -> dict:
         """Serialize the result for JSON reports, including the computed
@@ -257,6 +261,7 @@ class ScanResult:
             "verified_findings": sum(1 for f in self.findings if f.verified),
             "unique_issue_count": len({f.id for f in self.findings}),
             "target_profile": self.target_profile,
+            "retest_summary": self.retest_summary,
         }
 
 # Registry of scan modules selectable via --modules / WebScanner(modules=...).

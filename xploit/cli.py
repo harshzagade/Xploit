@@ -188,6 +188,9 @@ def _retest_if_requested(args: argparse.Namespace, scanner: WebScanner,
     # redraw the bar at 100% still labeled "Checks complete".
     scanner.on_request = None
     stats = retest_findings(scanner, result.findings)
+    # Store the tally on the result so JSON reports carry it — the printed
+    # line above is terminal-only and was previously lost to pipelines.
+    result.retest_summary = dict(stats)
     if show_ui:
         print(color(retest_summary_line(stats), "MEDIUM", colors))
 

@@ -116,6 +116,7 @@ xploit https://target.example \
 ```bash
 xploit https://target.example --mode active --retest
 ```
+The tally (`confirmed` / `fixed` / `unverifiable` / `skipped`) is stored on the result as `retest_summary` in JSON reports (`null` when `--retest` was not passed).
 
 ### Save Report to File
 ```bash

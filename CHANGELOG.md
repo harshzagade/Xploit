@@ -9,6 +9,12 @@
   round-trips evidence containing commas, quotes or newlines.
   `tests/test_csv_format.py` covers the header/rows, quoting round-trip,
   empty-result and multi-target cases.
+- Retest summary in JSON reports: `_retest_if_requested` used to only print
+  the tally, so pipelines lost it. The tally is now stored on
+  `ScanResult.retest_summary` (`{confirmed, fixed, unverifiable, skipped}`,
+  `null` when no retest ran) and serialized by `to_dict()`.
+  `tests/test_retest_summary.py` covers the default, the stored tally
+  (confirmed + passive-skipped) and the flag-off no-op.
 - **Stage 3 — judge findings in context** (context-aware deduplication and scoping):
   - CORS findings are now collapsed to one `CORS-001` per `(host, severity)` class
     instead of one per probed URL; the collapsed evidence notes the endpoint count
