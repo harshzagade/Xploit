@@ -3,6 +3,12 @@
 ## Unreleased
 
 ### Added
+- `--format csv`: one row per finding (`id`, `severity`, `url`, `parameter`,
+  `evidence`) for spreadsheet pipelines. All findings are included (like JSON),
+  multi-target runs share a single header row, and the csv module's quoting
+  round-trips evidence containing commas, quotes or newlines.
+  `tests/test_csv_format.py` covers the header/rows, quoting round-trip,
+  empty-result and multi-target cases.
 - **Stage 3 — judge findings in context** (context-aware deduplication and scoping):
   - CORS findings are now collapsed to one `CORS-001` per `(host, severity)` class
     instead of one per probed URL; the collapsed evidence notes the endpoint count

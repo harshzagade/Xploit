@@ -96,7 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "for faster targeted scans (e.g. --modules xss,sqli); "
                              "may be repeated. Valid modules: "
                              + ", ".join(MODULE_REGISTRY))
-    parser.add_argument("--format", choices=("text", "json"), default="text", help="output format")
+    parser.add_argument("--format", choices=("text", "json", "csv"), default="text", help="output format")
     parser.add_argument("--output", metavar="PATH", default=None, help="write the report to a file (ANSI colors stripped)")
     parser.add_argument("--retest", action="store_true", help="re-fire each finding's proof request to confirm it still reproduces (active traffic; skipped in passive mode)")
     parser.add_argument("--proxy", default=None, metavar="URL",
@@ -302,6 +302,9 @@ def _run_multi_target(args: argparse.Namespace, targets: list[str]) -> int:
     if args.format == "json":
         content = json.dumps([r.to_dict() for r in ordered],
                              indent=2, sort_keys=True)
+    elif args.format == "csv":
+        from .reporting import render_csv_reports
+        content = render_csv_reports(ordered)
     else:
         from .reporting import render_text_report
         content = "\n\n".join(
@@ -469,6 +472,9 @@ def _run_single_target(args: argparse.Namespace, target_url: str) -> int:
 
     if args.format == "json":
         content = render_json_report(result)
+    elif args.format == "csv":
+        from .reporting import render_csv_report
+        content = render_csv_report(result)
     else:
         from .reporting import render_text_report
         content = render_text_report(result, colors=colors,

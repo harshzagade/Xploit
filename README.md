@@ -32,7 +32,7 @@
   - Detailed findings with severity ratings (HIGH/MEDIUM/LOW)
   - CWE classifications for all vulnerabilities
   - Evidence, impact assessment, and remediation guidance
-  - Text and JSON output formats
+  - Text, JSON and CSV output formats (CSV: one row per finding — id, severity, url, parameter, evidence — for spreadsheet pipelines)
   - `--output PATH` saves the report to a file (ANSI colors stripped)
 
 - **Evidence-Gated Findings**
@@ -335,7 +335,8 @@ options:
                         for faster targeted scans (e.g. --modules xss,sqli);
                         may be repeated. Valid modules: general, exposure,
                         data, sqli, xss, cmd, logic, auth, advanced, brute
-  --format {text,json}  output format
+  --format {text,json,csv}
+                        output format
   --output PATH         write the report to a file (ANSI colors stripped)
   --retest              re-fire each finding's proof request to confirm it
                         still reproduces (active traffic; skipped in passive

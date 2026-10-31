@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 import textwrap
@@ -211,6 +213,33 @@ def render_text_report(result: ScanResult, colors: bool = True,
 
 def render_json_report(result: ScanResult) -> str:
     return json.dumps(result.to_dict(), indent=2, sort_keys=True)
+
+
+# CSV columns for `--format csv`: one row per finding, for spreadsheet
+# pipelines. Every finding is included (like JSON, unlike the text report's
+# --min-severity collapsing), and the csv module's quoting round-trips
+# evidence containing commas, quotes or newlines.
+_CSV_HEADER = ["id", "severity", "url", "parameter", "evidence"]
+
+
+def render_csv_reports(results: list[ScanResult]) -> str:
+    """Render findings from one or more scan results as CSV text.
+
+    A single header row covers all results, so multi-target runs produce
+    one concatenated table (each finding's full URL identifies its target).
+    """
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n")
+    writer.writerow(_CSV_HEADER)
+    for result in results:
+        for finding in result.findings:
+            writer.writerow([finding.id, finding.severity, finding.url,
+                             finding.parameter, finding.evidence])
+    return buf.getvalue().rstrip("\n")
+
+
+def render_csv_report(result: ScanResult) -> str:
+    return render_csv_reports([result])
 
 
 def write_report(content: str, output_path: str) -> None:
