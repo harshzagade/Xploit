@@ -597,6 +597,13 @@ class WebScanner:
       slow-drip server bypasses ``--timeout`` and the scan hangs.
     - ``scope_prefix``/``exclude``: restrict crawling to a path prefix, or
       skip URLs matching Python regexes (compiled eagerly, fail fast).
+    - ``checkpoint``/``resume``: ``--checkpoint FILE`` writes a resume
+      checkpoint after the crawl and after each module (see
+      :mod:`xploit.checkpoint`); ``--resume FILE`` loads one, skips its
+      completed modules, and writes progress back to the same file when
+      no separate ``--checkpoint`` path is given. A checkpoint whose
+      target differs from this scan's root, or one already marked
+      finished, fails fast with ``ValueError``.
 
     Safety baked into the request layer: retries are idempotent-only
     (GET/HEAD/OPTIONS, never POST), redirects are followed manually with a
@@ -629,6 +636,8 @@ class WebScanner:
         read_deadline: float | None = None,
         jitter: float = 0.0,
         proxy: str | None = None,
+        checkpoint: str | None = None,
+        resume: str | None = None,
     ) -> None:
         self.target = target
         self.root = normalize_url(target)
@@ -727,6 +736,16 @@ class WebScanner:
 
         self.session.headers.update({"User-Agent": user_agent})
         
+        # Resume checkpointing (--checkpoint/--resume; see xploit.checkpoint).
+        # The write target is the explicit checkpoint path, or the resume
+        # path itself when only --resume was given, so a resumed scan
+        # keeps making progress in the same file.
+        self.checkpoint_file = checkpoint
+        self.resume_file = resume
+        self._checkpoint_path = checkpoint or resume
+        self._resumed_completed: set[str] = set()
+        self._resumed_crawled: list[str] = []
+        self._checkpoint_warned = False
         self.findings: list[Finding] = []
         self.errors: list[str] = []
         self.pages: dict[str, requests.Response] = {}
@@ -762,6 +781,47 @@ class WebScanner:
         # frozen on a single phase label.
         self.on_request: Callable[[int], None] | None = None
         self._request_count = 0
+
+    def _write_checkpoint(self, finished: bool) -> None:
+        """Persist the current scan state to the checkpoint file, if any.
+
+        Serialized under the scanner lock so parallel module workers
+        cannot interleave snapshots (a stale snapshot overwriting a
+        newer one would resurrect already-completed modules on resume).
+        A write failure is recorded once in ``self.errors`` and never
+        fails the scan — the checkpoint is progress insurance, not the
+        scan itself.
+        """
+        if not self._checkpoint_path:
+            return
+        from .checkpoint import (
+            serialize_findings,
+            serialize_forms,
+            write_checkpoint,
+        )
+        with self._lock:
+            crawled = list(self.pages)
+            forms = serialize_forms(self.forms)
+            completed = list(self._checks_run)
+            findings = serialize_findings(self.findings)
+        try:
+            write_checkpoint(
+                self._checkpoint_path,
+                target=self.root,
+                crawled=crawled,
+                forms=forms,
+                completed_modules=completed,
+                findings=findings,
+                finished=finished,
+            )
+        except OSError as exc:
+            if not self._checkpoint_warned:
+                self._checkpoint_warned = True
+                with self._lock:
+                    self.errors.append(
+                        f"Could not write checkpoint "
+                        f"{self._checkpoint_path}: {exc}"
+                    )
 
     def _run_one_module(self, module) -> None:
         """Execute a single scan module with a crash guard.
@@ -820,6 +880,7 @@ class WebScanner:
             with self._lock:
                 finished[0] += 1
                 n = finished[0]
+            self._write_checkpoint(finished=False)
             if self.on_progress:
                 self.on_progress(n, total, f"Completed {module.name}")
 
@@ -840,8 +901,47 @@ class WebScanner:
         """
         started = time.strftime("%Y-%m-%d %H:%M:%S %Z")
         start_time = time.monotonic()
-        
+
+        # --resume: restore completed modules, their findings, and the
+        # discovered forms/crawl list before any new work happens.
+        if self.resume_file:
+            from .checkpoint import (
+                deserialize_findings,
+                deserialize_forms,
+                load_checkpoint,
+            )
+            payload = load_checkpoint(self.resume_file)
+            if payload["finished"]:
+                raise ValueError(
+                    "Checkpoint scan already finished — nothing to resume")
+            if payload["target"] != self.root:
+                raise ValueError(
+                    f"--resume checkpoint target {payload['target']!r} does "
+                    f"not match scan target {self.root!r}")
+            self._resumed_completed = set(payload["completed_modules"])
+            self._resumed_crawled = list(payload["crawled"])
+            self.forms = deserialize_forms(payload["forms"])
+            self.findings = deserialize_findings(payload["findings"])
+            # Seed the scanner-wide dedupe set so re-run modules never
+            # re-report a restored finding.
+            self._finding_keys = {finding_dedupe_key(f) for f in self.findings}
+            self._checks_run = list(payload["completed_modules"])
+
         self._crawl()
+        # A resumed crawl re-extracts forms from re-fetched pages, which
+        # duplicates the restored checkpoint forms — dedupe (first wins)
+        # so modules do not probe the same form twice.
+        if self.resume_file:
+            seen_forms: set = set()
+            deduped = []
+            for form in self.forms:
+                key = (form.page_url, form.action, form.method,
+                       tuple(sorted(form.inputs.items())))
+                if key not in seen_forms:
+                    seen_forms.add(key)
+                    deduped.append(form)
+            self.forms = deduped
+        self._write_checkpoint(finished=False)
         self._build_target_profile()
         if self.mode in {ACTIVE, FULL}:
             self._build_param_hints()
@@ -893,17 +993,28 @@ class WebScanner:
                 # ExposureModule already runs in PASSIVE/FULL above.
                 # Do NOT add it again for ACTIVE — was causing double findings.
 
+        # --resume: completed modules are skipped, not re-run. Their
+        # findings are already in self.findings (restored above) and
+        # their names already in self._checks_run.
+        if self._resumed_completed:
+            modules_to_run = [
+                m for m in modules_to_run
+                if m.name not in self._resumed_completed
+            ]
+
         if self.parallel_modules <= 1 or len(modules_to_run) <= 1:
             for i, module in enumerate(modules_to_run, start=1):
                 if self.on_progress:
                     self.on_progress(i - 1, len(modules_to_run), f"Running {module.name}")
                 self._run_one_module(module)
+                self._write_checkpoint(finished=False)
                 if self.on_progress:
                     phase = "Checks complete" if i == len(modules_to_run) else f"Completed {module.name}"
                     self.on_progress(i, len(modules_to_run), phase)
         else:
             self._run_modules_parallel(modules_to_run)
 
+        self._write_checkpoint(finished=True)
         return ScanResult(
             target=self.target,
             normalized_target=self.root,
@@ -1410,7 +1521,16 @@ class WebScanner:
 
     def _crawl(self) -> None:
         """Parallelized crawler with path normalization."""
-        entry_points = self._discover_entry_points()
+        if self._resumed_crawled:
+            # --resume: seed from the checkpoint's known pages instead of
+            # re-running robots.txt/sitemap discovery. The pages are still
+            # fetched (responses are not persisted) so modules get live
+            # response objects, and link expansion from them continues
+            # the crawl past where the killed scan stopped.
+            entry_points = [url for url in self._resumed_crawled
+                            if self._in_scope(url) and not self._excluded(url)]
+        else:
+            entry_points = self._discover_entry_points()
         seen = set(entry_points)
         for ep in entry_points:
             self._normalized_seen.add(normalize_path(ep))
@@ -1672,9 +1792,14 @@ class WebScanner:
             sleep(delay)
 
     def _empty_result(self, started, start_time):
+        # findings/_checks_run are empty here on a fresh scan, but on a
+        # resumed scan they carry the restored completed modules and
+        # their findings — those survive even when the target is now
+        # unreachable, instead of being silently dropped.
         return ScanResult(
             self.target, self.root, started, round(time.monotonic() - start_time, 2),
-            "unreachable", self.mode, self.scope_prefix, 0, [], [], 0, [], self.errors,
+            "unreachable", self.mode, self.scope_prefix, 0, list(self._checks_run), [], 0,
+            list(self.findings), self.errors,
             exclude_patterns=list(self.exclude),
             modules=list(self.modules or []),
             target_profile=self.target_profile,

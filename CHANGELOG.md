@@ -3,6 +3,20 @@
 ## Unreleased
 
 ### Added
+- Scan resume (`--checkpoint FILE` / `--resume FILE`, single-target):
+  new `xploit/checkpoint.py` writes versioned JSON checkpoints via a
+  temp file + rename (mirroring the DurbX pattern), recording the
+  target, crawled pages, discovered forms, completed module names and
+  their findings. A resumed scan seeds its crawl from the checkpoint's
+  pages, skips completed modules entirely, restores their findings into
+  the final report, and writes progress back to the same file; a
+  target mismatch or an already-finished checkpoint fails fast, and a
+  checkpoint write failure is recorded in `errors` without failing the
+  scan. Page responses are not persisted, so crawled pages are
+  re-fetched to rebuild the in-memory page table.
+  `tests/test_checkpoint.py` covers the round-trip, validation errors,
+  module skipping, finding restoration, crawl seeding and the
+  write-failure path.
 - `--format csv`: one row per finding (`id`, `severity`, `url`, `parameter`,
   `evidence`) for spreadsheet pipelines. All findings are included (like JSON),
   multi-target runs share a single header row, and the csv module's quoting

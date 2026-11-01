@@ -99,6 +99,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--format", choices=("text", "json", "csv"), default="text", help="output format")
     parser.add_argument("--output", metavar="PATH", default=None, help="write the report to a file (ANSI colors stripped)")
     parser.add_argument("--retest", action="store_true", help="re-fire each finding's proof request to confirm it still reproduces (active traffic; skipped in passive mode)")
+    parser.add_argument("--checkpoint", metavar="FILE", default=None,
+                        help="write resume checkpoints during the scan (single-target runs); "
+                             "progress is saved after the crawl and after each module")
+    parser.add_argument("--resume", metavar="FILE", default=None,
+                        help="resume an interrupted scan from a checkpoint file (single-target); "
+                             "completed modules are skipped, their findings restored, and progress "
+                             "is written back to this file unless --checkpoint is also given")
     parser.add_argument("--proxy", default=None, metavar="URL",
                         help="route all scan traffic through an HTTP/HTTPS "
                              "proxy (e.g. http://127.0.0.1:8080 for a "
@@ -173,6 +180,9 @@ def _build_scanner(args: argparse.Namespace, target_url: str) -> WebScanner:
         user_agent=getattr(args, "user_agent", None),
         # getattr: Namespaces built by hand may predate the --proxy flag.
         proxy=getattr(args, "proxy", None),
+        # getattr: same for --checkpoint/--resume.
+        checkpoint=getattr(args, "checkpoint", None),
+        resume=getattr(args, "resume", None),
         verify=not args.insecure,
     )
     apply_request_overrides(scanner, args.header, args.cookie)
@@ -225,6 +235,13 @@ def run_scan(args: argparse.Namespace) -> int:
     targets = target_list(args)
     if len(targets) == 1:
         return _run_single_target(args, targets[0])
+    # Checkpoints track one target's crawl + module progress, so like
+    # DurbX they are single-target only — a shared file across targets
+    # would mix unrelated scans.
+    if getattr(args, "checkpoint", None) or getattr(args, "resume", None):
+        print(color("error: --checkpoint/--resume support single-target "
+                    "scans only", HIGH, not args.no_color), file=sys.stderr)
+        return 2
     return _run_multi_target(args, targets)
 
 

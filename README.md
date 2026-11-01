@@ -165,6 +165,23 @@ faster. Module names are case-insensitive (aliases: `traversal`/`command` →
 overrides the `--mode` gating — the named modules run exactly as asked — and
 is recorded in the text summary ("Modules selected") and JSON report.
 
+### Resume an Interrupted Scan
+```bash
+xploit https://target.example --checkpoint scan.json
+xploit https://target.example --resume scan.json
+```
+`--checkpoint FILE` saves progress after the crawl and after each module
+(single-target runs only). If the scan is killed, `--resume FILE` picks it
+up: completed modules are skipped, their findings are restored into the
+final report, and the crawl seeds from the checkpoint's known pages
+instead of re-running robots.txt/sitemap discovery. A checkpoint whose
+target differs from the scan URL, or one already marked finished, fails
+fast. Progress is written back to the `--resume` file unless `--checkpoint`
+is also given. One honest limit: page responses are not persisted, so a
+resumed scan re-fetches crawled pages to rebuild the in-memory page
+table — what resume saves is the discovery phase, completed modules'
+probe traffic, and every finding already recorded.
+
 ### Run Without Installing
 ```bash
 python3 xploit.py https://target.example
@@ -342,6 +359,13 @@ options:
   --retest              re-fire each finding's proof request to confirm it
                         still reproduces (active traffic; skipped in passive
                         mode)
+  --checkpoint FILE     write resume checkpoints during the scan
+                        (single-target runs); progress is saved after the
+                        crawl and after each module
+  --resume FILE         resume an interrupted scan from a checkpoint file
+                        (single-target); completed modules are skipped,
+                        their findings restored, and progress is written
+                        back to this file unless --checkpoint is also given
   --proxy URL           route all scan traffic through an HTTP/HTTPS proxy
                         (e.g. http://127.0.0.1:8080 for a Burp-style local
                         intercept); a bare host:port is treated as
