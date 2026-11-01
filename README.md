@@ -1,7 +1,7 @@
 # Xploit
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-1.6.0-blue.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Version-1.8.0-blue.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow.svg?style=flat-square">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Detections-25%2B-brightgreen.svg?style=flat-square">
@@ -25,6 +25,10 @@
 - **Intelligent Crawling**
   - Same-origin enforcement with configurable depth
   - Sitemap and robots.txt discovery
+  - OpenAPI/Swagger seeding: a served `/openapi.json` or `/swagger.json`
+    adds its declared paths (templates filled, query params seeded) as
+    crawl entry points, so API-only routes no linked page mentions still
+    get probed
   - Form extraction and parameter analysis
   - Up to 500 pages per scan
 
@@ -181,6 +185,14 @@ is also given. One honest limit: page responses are not persisted, so a
 resumed scan re-fetches crawled pages to rebuild the in-memory page
 table — what resume saves is the discovery phase, completed modules'
 probe traffic, and every finding already recorded.
+
+### Probe API Routes from the Spec
+No flag needed: when the target serves `/openapi.json` or `/swagger.json`,
+its declared paths are seeded into the crawl automatically (same-origin
+and `--exclude` filtering still apply). Path templates like
+`/users/{id}` are filled with `1` and declared query parameters with
+`xploit`, so API-only routes that no HTML page links to still get
+probed by every module.
 
 ### Run Without Installing
 ```bash

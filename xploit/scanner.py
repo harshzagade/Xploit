@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import importlib
+import json
 import random
 import re
 import threading
@@ -1666,6 +1667,22 @@ class WebScanner:
                         except ValueError:
                             continue
                     entry_points.add(candidate)
+        # OpenAPI/Swagger seeding: API-only routes are linked from no HTML
+        # page, so a pure link-crawl never probes them. A served spec's
+        # declared paths become entry points too (same scope/exclude
+        # filtering as everything else below; a missing or broken spec
+        # is silently skipped — it is a best-effort bonus, not a crawl
+        # requirement).
+        from .openapi import extract_openapi_paths
+        for spec_path in ("/openapi.json", "/swagger.json"):
+            spec_res = self._request("GET", urljoin(self.root, spec_path), quiet=True)
+            if not spec_res or spec_res.status_code >= 400:
+                continue
+            try:
+                spec = json.loads(spec_res.text)
+            except (ValueError, TypeError):
+                continue
+            entry_points.update(extract_openapi_paths(spec, self.root))
         return [url for url in entry_points
                 if self._in_scope(url) and not self._excluded(url)]
 

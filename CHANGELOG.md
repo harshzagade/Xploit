@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Added
+- OpenAPI spec seeding: `_discover_entry_points` now also fetches
+  `/openapi.json` and `/swagger.json` (quiet, best-effort) and feeds
+  their declared paths into the crawl via new `xploit/openapi.py`
+  (`extract_openapi_paths`). OpenAPI 3 server URLs (relative, absolute
+  or templated with defaults/enums) and Swagger 2 host/scheme/basePath
+  are resolved; path templates fill with `1`, declared query params
+  seed with `xploit`, and same-origin/scope/exclude filtering still
+  applies. Malformed specs yield no seeds and never break the crawl.
+  `tests/test_openapi.py` covers both spec versions, templating,
+  server variables, off-origin filtering and a live fixture server.
 - Scan resume (`--checkpoint FILE` / `--resume FILE`, single-target):
   new `xploit/checkpoint.py` writes versioned JSON checkpoints via a
   temp file + rename (mirroring the DurbX pattern), recording the
