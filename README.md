@@ -1,7 +1,7 @@
 # Xploit
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-1.9.0-blue.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Version-1.10.0-blue.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow.svg?style=flat-square">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Detections-25%2B-brightgreen.svg?style=flat-square">
@@ -185,6 +185,17 @@ is also given. One honest limit: page responses are not persisted, so a
 resumed scan re-fetches crawled pages to rebuild the in-memory page
 table — what resume saves is the discovery phase, completed modules'
 probe traffic, and every finding already recorded.
+
+### Dry-Run: List Entry Points Before Probing
+```bash
+xploit https://target.example --dry-run
+```
+Crawls (robots/sitemap/OpenAPI seeding plus link following) and prints
+the discovered pages, forms and parameters — and nothing else. No scan
+module runs, so no probe traffic is sent, no checkpoint is written, and
+`--checkpoint`/`--resume`/`--retest` are rejected as meaningless combos.
+JSON output carries the same listing in `entry_points`. Use it to scope
+a scan before the active phase.
 
 ### Probe API Routes from the Spec
 No flag needed: when the target serves `/openapi.json` or `/swagger.json`,
@@ -371,6 +382,9 @@ options:
   --retest              re-fire each finding's proof request to confirm it
                         still reproduces (active traffic; skipped in passive
                         mode)
+  --dry-run             crawl and print discovered pages, forms and
+                        parameters without sending any probe traffic
+                        (no scan modules run)
   --checkpoint FILE     write resume checkpoints during the scan
                         (single-target runs); progress is saved after the
                         crawl and after each module

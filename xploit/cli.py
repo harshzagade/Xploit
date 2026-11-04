@@ -99,6 +99,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--format", choices=("text", "json", "csv"), default="text", help="output format")
     parser.add_argument("--output", metavar="PATH", default=None, help="write the report to a file (ANSI colors stripped)")
     parser.add_argument("--retest", action="store_true", help="re-fire each finding's proof request to confirm it still reproduces (active traffic; skipped in passive mode)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="crawl and print discovered pages, forms and "
+                             "parameters without sending any probe traffic "
+                             "(no scan modules run; for scoping a scan "
+                             "before the active phase)")
     parser.add_argument("--checkpoint", metavar="FILE", default=None,
                         help="write resume checkpoints during the scan (single-target runs); "
                              "progress is saved after the crawl and after each module")
@@ -183,6 +188,8 @@ def _build_scanner(args: argparse.Namespace, target_url: str) -> WebScanner:
         # getattr: same for --checkpoint/--resume.
         checkpoint=getattr(args, "checkpoint", None),
         resume=getattr(args, "resume", None),
+        # getattr: Namespaces built by hand may predate the --dry-run flag.
+        dry_run=getattr(args, "dry_run", False),
         verify=not args.insecure,
     )
     apply_request_overrides(scanner, args.header, args.cookie)
@@ -232,6 +239,21 @@ def _write_output(args: argparse.Namespace, content: str, colors: bool) -> None:
 
 
 def run_scan(args: argparse.Namespace) -> int:
+    # A dry-run lists entry points instead of scanning, so options that
+    # only make sense for a real scan fail fast rather than being
+    # silently ignored (same style as the checkpoint single-target guard).
+    if getattr(args, "dry_run", False):
+        if getattr(args, "checkpoint", None) or getattr(args, "resume", None):
+            print(color("error: --dry-run cannot be combined with "
+                        "--checkpoint/--resume (a listing is not resumable "
+                        "scan progress)", HIGH, not args.no_color),
+                  file=sys.stderr)
+            return 2
+        if getattr(args, "retest", False):
+            print(color("error: --dry-run cannot be combined with --retest "
+                        "(a listing has no findings to re-fire)", HIGH,
+                        not args.no_color), file=sys.stderr)
+            return 2
     targets = target_list(args)
     if len(targets) == 1:
         return _run_single_target(args, targets[0])

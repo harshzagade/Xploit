@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- `--dry-run` entry-point listing: `WebScanner(dry_run=True)` crawls and
+  returns a `ScanResult` with status `"dry-run"`, no findings, and an
+  `entry_points` list (crawled pages with query parameters, discovered
+  forms with action/method/field names, exact duplicates collapsed) that
+  is serialized into JSON reports; the text report prints the listing
+  instead of "No findings detected." No scan module runs, so no probe
+  traffic is sent; no checkpoint is written, and `--checkpoint` /
+  `--resume` / `--retest` combos fail fast (exit 2). The crawl itself
+  is plain GET discovery, which is what is being listed.
+  `tests/test_dry_run.py` covers the listing, dedupe, no-checkpoint
+  write, text rendering and CLI guards.
 - Blind LDAP detection (LDAP-002): boolean-based differential check for
   backends that swallow error text — a plain impossible value must sit
   within 150B of the baseline, and two structurally different wildcard

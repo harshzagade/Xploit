@@ -131,6 +131,33 @@ def render_text_report(result: ScanResult, colors: bool = True,
 
     lines.append("")
 
+    if result.status == "dry-run":
+        # A dry-run has no findings by design — its output IS the
+        # entry-point listing, so it replaces the findings section
+        # instead of falling through to "No findings detected."
+        lines.append(f"  {DIM}DRY RUN — no probe traffic sent; "
+                     f"entry points discovered by the crawl:{RESET}")
+        lines.append("")
+        entries = getattr(result, "entry_points", []) or []
+        if not entries:
+            lines.append(f"  {DIM}No pages or forms discovered.{RESET}")
+        for entry in entries:
+            params = ", ".join(entry.get("parameters") or [])
+            param_str = f"  {DIM}params: {params}{RESET}" if params else ""
+            if entry.get("kind") == "form":
+                lines.append(f"  {BOLD}{entry.get('method', '')} "
+                             f"{sanitize_terminal(entry.get('url', ''))}{RESET}"
+                             f"  {DIM}(form on "
+                             f"{sanitize_terminal(entry.get('page_url', ''))}){RESET}")
+            else:
+                lines.append(f"  {BOLD}{entry.get('method', 'GET')} "
+                             f"{sanitize_terminal(entry.get('url', ''))}{RESET}")
+            if param_str:
+                lines.append(f"    {param_str}")
+        lines.append("")
+        lines.append("─" * (box_w + 2))
+        return "\n".join(lines).rstrip()
+
     if not result.findings:
         if result.status == "unreachable":
             lines.append(f"  {RED}Target was unreachable.{RESET}")

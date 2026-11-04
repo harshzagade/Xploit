@@ -236,6 +236,12 @@ class ScanResult:
     # skipped}); None when no retest ran, so JSON consumers can tell
     # "not run" apart from "ran with zero findings".
     retest_summary: dict | None = None
+    # --dry-run listing: one dict per discovered entry point
+    # ({kind: "page"|"form", url, method, parameters, page_url?}).
+    # Empty for real scans — only a dry-run populates it, so JSON
+    # consumers can tell "not a dry-run" apart from "dry-run found
+    # nothing" via the result status, not this field.
+    entry_points: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Serialize the result for JSON reports, including the computed
@@ -263,6 +269,7 @@ class ScanResult:
             "unique_issue_count": len({f.id for f in self.findings}),
             "target_profile": self.target_profile,
             "retest_summary": self.retest_summary,
+            "entry_points": list(self.entry_points),
         }
 
 # Registry of scan modules selectable via --modules / WebScanner(modules=...).
@@ -605,6 +612,12 @@ class WebScanner:
       no separate ``--checkpoint`` path is given. A checkpoint whose
       target differs from this scan's root, or one already marked
       finished, fails fast with ``ValueError``.
+    - ``dry_run``: ``--dry-run`` crawls and returns the discovered
+      entry points without running any scan module — no probe traffic
+      at all. No checkpoint is written for a dry-run (a listing is not
+      resumable scan progress), and ``_build_target_profile`` /
+      ``_build_param_hints`` are skipped because the latter sends
+      probe requests.
 
     Safety baked into the request layer: retries are idempotent-only
     (GET/HEAD/OPTIONS, never POST), redirects are followed manually with a
@@ -639,6 +652,7 @@ class WebScanner:
         proxy: str | None = None,
         checkpoint: str | None = None,
         resume: str | None = None,
+        dry_run: bool = False,
     ) -> None:
         self.target = target
         self.root = normalize_url(target)
@@ -743,6 +757,7 @@ class WebScanner:
         # keeps making progress in the same file.
         self.checkpoint_file = checkpoint
         self.resume_file = resume
+        self.dry_run = dry_run
         self._checkpoint_path = checkpoint or resume
         self._resumed_completed: set[str] = set()
         self._resumed_crawled: list[str] = []
@@ -942,6 +957,30 @@ class WebScanner:
                     seen_forms.add(key)
                     deduped.append(form)
             self.forms = deduped
+        # --dry-run: listing only. No modules run (no probe traffic), no
+        # checkpoint is written, and no target-profile/param-hint pass
+        # runs (the hint pass sends probes). The crawl itself is plain
+        # GET discovery — robots/sitemap/OpenAPI seeding plus link
+        # following — which is exactly what is being listed.
+        if self.dry_run:
+            return ScanResult(
+                target=self.target,
+                normalized_target=self.root,
+                started_at=started,
+                duration_seconds=round(time.monotonic() - start_time, 2),
+                status="dry-run",
+                scan_mode=self.mode,
+                scope_prefix=self.scope_prefix,
+                completion_percent=100,
+                checks_run=["dry-run"],
+                pages_seen=list(self.pages.keys()),
+                forms_seen=len(self.forms),
+                findings=[],
+                errors=self.errors,
+                exclude_patterns=list(self.exclude),
+                modules=list(self.modules or []),
+                entry_points=self._dry_run_entry_points(),
+            )
         self._write_checkpoint(finished=False)
         self._build_target_profile()
         if self.mode in {ACTIVE, FULL}:
@@ -1638,6 +1677,38 @@ class WebScanner:
         # Broad extraction
         links.update(self._urls_from_text(res.text))
         return links
+
+    def _dry_run_entry_points(self) -> list[dict]:
+        """Build the --dry-run listing from the finished crawl.
+
+        One dict per crawled page (its query parameters) and one per
+        discovered form (action, method, field names, source page).
+        Exact duplicates collapse (a form posting to its own page URL
+        with the same fields is still a form entry, not a page entry —
+        the kinds differ, so both are kept). Order is crawl order, so
+        the listing reads like the crawl itself.
+        """
+        entries: list[dict] = []
+        seen: set = set()
+        for url in self.pages:
+            entry = {"kind": "page", "url": url, "method": "GET",
+                     "parameters": query_parameters(url)}
+            key = (entry["kind"], entry["url"], entry["method"],
+                   tuple(entry["parameters"]))
+            if key not in seen:
+                seen.add(key)
+                entries.append(entry)
+        for form in self.forms:
+            entry = {"kind": "form", "url": form.action,
+                     "method": form.method.upper(),
+                     "parameters": sorted(form.inputs),
+                     "page_url": form.page_url}
+            key = (entry["kind"], entry["url"], entry["method"],
+                   tuple(entry["parameters"]))
+            if key not in seen:
+                seen.add(key)
+                entries.append(entry)
+        return entries
 
     def _discover_entry_points(self) -> list[str]:
         entry_points = {self.root}
