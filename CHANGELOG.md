@@ -3,6 +3,20 @@
 ## Unreleased
 
 ### Added
+- Blind LDAP detection (LDAP-002): boolean-based differential check for
+  backends that swallow error text — a plain impossible value must sit
+  within 150B of the baseline, and two structurally different wildcard
+  probes (`*`, `*)(uid=*`) must both come back more than 200B longer
+  (more directory entries returned). Any LDAP error marker in a blind
+  probe aborts the verdict so LDAP-001's error path stays authoritative,
+  and a single expanding wildcard never flags. Medium confidence: the
+  confirmation is behavioral (a length gap), so the finding carries no
+  substring marker and the provenance gate honestly leaves it
+  unverified until an analyst confirms it; the proof URL replays the
+  wildcard request for manual verification.
+  `tests/test_blind_ldap.py` covers both-wildcards, one-wildcard,
+  identical-response, unstable-page, error-marker-abort and
+  error-path-wins cases.
 - OpenAPI spec seeding: `_discover_entry_points` now also fetches
   `/openapi.json` and `/swagger.json` (quiet, best-effort) and feeds
   their declared paths into the crawl via new `xploit/openapi.py`

@@ -73,6 +73,33 @@ LDAP_CONFIRM_PAYLOADS = (
     ")(|(cn=*))",
 )
 
+#: Boolean-based blind LDAP probes. Backends that swallow error text (no
+#: LDAP-001 error page) can still be detected differentially: a wildcard
+#: value interpolated into the filter matches every directory entry, while
+#: a plain impossible value matches none, so the two responses diverge.
+#: Two structurally different wildcard forms must BOTH diverge from the
+#: impossible value in the same direction (longer — more entries
+#: returned), mirroring the two-round-trip rule for LDAP-001. A single
+#: differing response is not enough: search pages legitimately return
+#: different result counts for different queries.
+BLIND_LDAP_TRUE_PAYLOADS = (
+    "*",
+    "*)(uid=*",
+)
+#: Plain value that matches no directory entry whether interpolated or
+#: treated literally, so its response is the no-match reference. Distinct
+#: from the "ldap_baseline_xploit" baseline so page stability can be
+#: checked: false-vs-baseline must be near-identical, or the page is too
+#: unstable (echo/timestamps) for a differential verdict.
+BLIND_LDAP_FALSE_PAYLOAD = "zzz_no_match_xploit_7k2"
+#: False-vs-baseline tolerance (bytes): mirrors the SQLi boolean check's
+#: 150B near-baseline rule. Above it, the page is unstable — abort.
+BLIND_LDAP_NEAR_BYTES = 150
+#: True-vs-false divergence required (bytes): mirrors the SQLi boolean
+#: check's 200B rule. Short wildcard payloads cannot cross it by mere
+#: echo of the input, so the gap must come from returned entries.
+BLIND_LDAP_DELTA_BYTES = 200
+
 class MultiVectorInjectionModule(BaseModule):
     """Detects LDAP, XML, NoSQL, and SSTI vulnerabilities"""
     name = "Advanced Injection Vulnerabilities"
@@ -172,6 +199,76 @@ class MultiVectorInjectionModule(BaseModule):
             self._attach_proof(finding, url, param, method, payload, base_data, matched[0])
             self.add_finding(finding)
             return
+        # No error-based finding: try the boolean blind check for backends
+        # that swallow error text. It runs only after the error loop, so a
+        # param never gets both LDAP-001 and LDAP-002.
+        self._test_blind_ldap_injection(url, param, method, base_data, baseline_text)
+
+    def _test_blind_ldap_injection(self, url, param, method, base_data=None,
+                                   baseline_text=""):
+        """Boolean-based blind LDAP detection (LDAP-002).
+
+        Differential, not error-based: the false probe (a plain impossible
+        value) must sit near the baseline, and BOTH wildcard probes must
+        come back substantially longer than the false probe. Any response
+        carrying an LDAP error marker aborts the blind verdict — that
+        evidence belongs to LDAP-001's error path, and a single erroring
+        probe must not be upgraded into a blind finding when its
+        confirmation failed.
+
+        Confidence is Medium, not High: a differential length gap is
+        behavioral evidence, and a search page can diverge for reasons
+        other than filter interpolation. The finding carries no substring
+        marker (there is none — the confirmation is the length gap), so
+        the provenance gate correctly leaves it unverified until an
+        analyst confirms it; the proof URL still replays the wildcard
+        request for manual verification.
+        """
+        false_res = self._send(url, param, method, BLIND_LDAP_FALSE_PAYLOAD, base_data)
+        if not false_res:
+            return
+        if self._ldap_error_markers(false_res.text, baseline_text):
+            return
+        baseline_len = len(baseline_text)
+        false_len = len(false_res.text)
+        if abs(false_len - baseline_len) > BLIND_LDAP_NEAR_BYTES:
+            return  # unstable page: false and baseline should both be no-match
+        true_lens = []
+        for true_payload in BLIND_LDAP_TRUE_PAYLOADS:
+            res = self._send(url, param, method, true_payload, base_data)
+            if not res:
+                return
+            if self._ldap_error_markers(res.text, baseline_text):
+                return
+            true_len = len(res.text)
+            if true_len - false_len <= BLIND_LDAP_DELTA_BYTES:
+                return  # this wildcard did not expand: not interpolated
+            true_lens.append(true_len)
+        finding = Finding(
+            id="LDAP-002",
+            name="Blind LDAP Injection",
+            category="LDAP Injection",
+            severity=HIGH,
+            confidence="Medium",
+            url=url,
+            parameter=param,
+            method=method,
+            trigger=BLIND_LDAP_TRUE_PAYLOADS[0],
+            evidence=(f"Boolean-based blind LDAP: wildcard responses "
+                      f"({true_lens[0]}B, {true_lens[1]}B) both exceed the "
+                      f"no-match response ({false_len}B) by more than "
+                      f"{BLIND_LDAP_DELTA_BYTES}B, while the no-match "
+                      f"response sits within {BLIND_LDAP_NEAR_BYTES}B of "
+                      f"the baseline ({baseline_len}B)"),
+            impact="Attacker can bypass authentication or enumerate LDAP directory entries without error output.",
+            remediation="Use parameterized LDAP queries and escape special characters.",
+            cwe="CWE-90"
+        )
+        # Empty marker on purpose: the confirmation is behavioral (length
+        # gap), not a replayable substring — see the docstring.
+        self._attach_proof(finding, url, param, method,
+                           BLIND_LDAP_TRUE_PAYLOADS[0], base_data, "")
+        self.add_finding(finding)
 
     def _test_xml_injection(self, url, param, method, base_data=None):
         """Detect XML Injection and XXE vulnerabilities"""

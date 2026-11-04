@@ -1,7 +1,7 @@
 # Xploit
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-1.8.0-blue.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Version-1.9.0-blue.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow.svg?style=flat-square">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Detections-25%2B-brightgreen.svg?style=flat-square">
@@ -236,7 +236,7 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 | | Cross-Site Scripting (XSS) | 20 payload variations + reflection check |
 | | Command Injection | Output-based detection |
 | | Directory Traversal | Path traversal payloads |
-| | **LDAP Injection** | Error-based detection with LDAP payloads |
+| | **LDAP Injection** | Error-based detection with LDAP payloads, plus boolean-based blind detection (LDAP-002) for backends that swallow error text |
 | | **XML Injection / XXE** | External entity payloads + file disclosure |
 | | **NoSQL Injection** | MongoDB/CouchDB error patterns |
 | | **Server-Side Template Injection (SSTI)** | Template expression evaluation |
