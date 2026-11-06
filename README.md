@@ -24,7 +24,9 @@
 
 - **Intelligent Crawling**
   - Same-origin enforcement with configurable depth
-  - Sitemap and robots.txt discovery
+  - Sitemap and robots.txt discovery, including nested sitemap indexes
+    (a `<sitemapindex>` entry's child sitemaps are followed up to 3
+    levels deep, same-origin only, with loop protection)
   - OpenAPI/Swagger seeding: a served `/openapi.json`, `/swagger.json`,
     `/openapi.yaml` or `/swagger.yaml` adds its declared paths (templates
     filled, query params seeded) as crawl entry points, so API-only routes

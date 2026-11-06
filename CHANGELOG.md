@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Added
+- Nested sitemap recursion: `_discover_entry_points` now follows
+  `<sitemap>` entries inside sitemap index files via new
+  `WebScanner._collect_sitemap_urls` — `<sitemap>` entries recurse,
+  `<url>` entries are pages (so a `.xml` page URL stays a page), and a
+  document with no wrappers falls back to the old bare-`<loc>` shape
+  (`.xml` entries treated as nested sitemaps). Recursion stops at 3
+  levels / 50 fetched documents, repeats are skipped, nested sitemaps
+  must be same-origin, and `.xml.gz` sitemaps are skipped (gzipped
+  bodies are not decompressed). Nested sitemap URLs are never entry
+  points themselves. `tests/test_sitemap_recursion.py` covers index
+  recursion, self-referencing indexes, the depth cap, off-origin
+  entries, the `.xml`-page case, the unwrapped fallback, `.xml.gz`
+  skipping and a live fixture server.
 - YAML OpenAPI spec seeding: `_discover_entry_points` now also fetches
   `/openapi.yaml` and `/swagger.yaml` alongside the JSON spec paths, so
   YAML-only API docs seed the crawl too. New stdlib-only

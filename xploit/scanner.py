@@ -74,6 +74,13 @@ FULL = "full"
 # override applied after construction still wins (see cli._build_scanner).
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
+# Nested-sitemap recursion limits for _collect_sitemap_urls: how deep
+# sitemap-index chains may nest, and how many sitemap documents may be
+# fetched in one discovery round. A loop or a hostile index cannot make
+# discovery fetch forever; ordinary sites nest at most one level deep.
+SITEMAP_MAX_DEPTH = 3
+SITEMAP_MAX_FETCHES = 50
+
 # File extensions that are known binary/media assets. URLs with these
 # extensions are never enqueued for crawling and their fetched responses are
 # not stored in scanner.pages — they carry no injection entry points and
@@ -1729,15 +1736,7 @@ class WebScanner:
                 entry_points.add(candidate)
         sitemap_urls = [urljoin(self.root, "/sitemap.xml"), urljoin(self.root, "/sitemap_index.xml")]
         for sitemap_url in sitemap_urls:
-            response = self._request("GET", sitemap_url, quiet=True)
-            if response and response.status_code < 400:
-                for candidate in self._urls_from_text(response.text):
-                    if not candidate.startswith(("http://", "https://")):
-                        try:
-                            candidate = urljoin(self.root, candidate)
-                        except ValueError:
-                            continue
-                    entry_points.add(candidate)
+            entry_points.update(self._collect_sitemap_urls(sitemap_url))
         # OpenAPI/Swagger seeding: API-only routes are linked from no HTML
         # page, so a pure link-crawl never probes them. A served spec's
         # declared paths become entry points too (same scope/exclude
@@ -1769,6 +1768,90 @@ class WebScanner:
             entry_points.update(extract_openapi_paths(spec, self.root))
         return [url for url in entry_points
                 if self._in_scope(url) and not self._excluded(url)]
+
+    def _collect_sitemap_urls(self, sitemap_url: str, depth: int = 0,
+                              seen: set | None = None) -> set[str]:
+        """Page URLs listed by a sitemap, following nested sitemap indexes.
+
+        A sitemap index lists other sitemaps (``<sitemap><loc>``), not
+        pages — the old code added those index entries as crawl targets
+        and never read the sitemaps they pointed at, so large sites'
+        deeper sitemap files were never discovered. This walks them:
+        ``<sitemap>`` entries recurse, ``<url>`` entries are pages.
+        A document with no ``<sitemap>``/``<url>`` wrappers falls back
+        to the old shape (bare ``<loc>`` list, ``.xml`` entries treated
+        as nested sitemaps). Recursion stops at ``SITEMAP_MAX_DEPTH``
+        levels, after ``SITEMAP_MAX_FETCHES`` fetched documents, or when
+        a URL repeats (``seen`` guards self-referencing indexes).
+        Nested sitemaps must be same-origin — an off-origin entry is
+        never fetched (its pages would fail the scope filter anyway).
+        Known limits, documented not hidden: ``.xml.gz`` sitemaps are
+        skipped (gzipped bodies are not decompressed), and a ``.xml``
+        page URL inside a ``<url>`` entry stays a page, never a sitemap.
+        Returns page URLs only; nested sitemap URLs are never entry
+        points. A missing or broken sitemap yields ``set()``.
+        """
+        if seen is None:
+            seen = set()
+        if depth > SITEMAP_MAX_DEPTH or len(seen) >= SITEMAP_MAX_FETCHES:
+            return set()
+        if sitemap_url in seen:
+            return set()
+        seen.add(sitemap_url)
+        response = self._request("GET", sitemap_url, quiet=True)
+        if not response or response.status_code >= 400:
+            return set()
+        text = response.text or ""
+        pages: set[str] = set()
+
+        def _locs(fragment: str) -> list[str]:
+            return [loc.strip() for loc in re.findall(
+                r"<loc>\s*(.*?)\s*</loc>", fragment, re.I | re.S)]
+
+        sitemap_blocks = re.findall(
+            r"<sitemap\b[^>]*>(.*?)</sitemap>", text, re.I | re.S)
+        url_blocks = re.findall(
+            r"<url\b[^>]*>(.*?)</url>", text, re.I | re.S)
+        nested: list[str] = []
+        if sitemap_blocks or url_blocks:
+            for block in sitemap_blocks:
+                nested.extend(_locs(block))
+            for block in url_blocks:
+                pages.update(self._resolve_sitemap_locs(_locs(block), sitemap_url))
+        else:
+            # Unwrapped <loc> list: .xml entries are nested sitemaps.
+            for loc in _locs(text):
+                if loc.lower().endswith(".xml.gz"):
+                    continue
+                if loc.lower().endswith(".xml"):
+                    nested.append(loc)
+                else:
+                    pages.update(self._resolve_sitemap_locs([loc], sitemap_url))
+        for loc in nested:
+            if loc.lower().endswith(".xml.gz"):
+                continue
+            try:
+                resolved = urljoin(sitemap_url, loc.strip())
+            except ValueError:
+                continue
+            if depth < SITEMAP_MAX_DEPTH and same_origin(resolved, self.root):
+                pages.update(
+                    self._collect_sitemap_urls(resolved, depth + 1, seen))
+        return pages
+
+    @staticmethod
+    def _resolve_sitemap_locs(locs: list[str], base: str) -> set[str]:
+        """Resolve sitemap ``<loc>`` values against the sitemap's URL."""
+        resolved: set[str] = set()
+        for loc in locs:
+            loc = loc.strip()
+            if not loc or loc.startswith("data:"):
+                continue
+            try:
+                resolved.add(urljoin(base, loc))
+            except ValueError:
+                continue
+        return resolved
 
     @staticmethod
     def _urls_from_text(text: str) -> set[str]:
