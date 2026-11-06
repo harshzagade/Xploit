@@ -25,10 +25,12 @@
 - **Intelligent Crawling**
   - Same-origin enforcement with configurable depth
   - Sitemap and robots.txt discovery
-  - OpenAPI/Swagger seeding: a served `/openapi.json` or `/swagger.json`
-    adds its declared paths (templates filled, query params seeded) as
-    crawl entry points, so API-only routes no linked page mentions still
-    get probed
+  - OpenAPI/Swagger seeding: a served `/openapi.json`, `/swagger.json`,
+    `/openapi.yaml` or `/swagger.yaml` adds its declared paths (templates
+    filled, query params seeded) as crawl entry points, so API-only routes
+    no linked page mentions still get probed (YAML specs are parsed by a
+    stdlib-only subset parser — no PyYAML needed; anchors, aliases, tags
+    and multi-document files are not supported and simply yield no seeds)
   - Form extraction and parameter analysis
   - Up to 500 pages per scan
 
@@ -198,12 +200,16 @@ JSON output carries the same listing in `entry_points`. Use it to scope
 a scan before the active phase.
 
 ### Probe API Routes from the Spec
-No flag needed: when the target serves `/openapi.json` or `/swagger.json`,
-its declared paths are seeded into the crawl automatically (same-origin
-and `--exclude` filtering still apply). Path templates like
-`/users/{id}` are filled with `1` and declared query parameters with
-`xploit`, so API-only routes that no HTML page links to still get
-probed by every module.
+No flag needed: when the target serves `/openapi.json`, `/swagger.json`,
+`/openapi.yaml` or `/swagger.yaml`, its declared paths are seeded into
+the crawl automatically (same-origin and `--exclude` filtering still
+apply). Path templates like `/users/{id}` are filled with `1` and
+declared query parameters with `xploit`, so API-only routes that no HTML
+page links to still get probed by every module. YAML specs are parsed by
+a stdlib-only subset parser in `xploit/yamlmini.py` (PyYAML is not a
+dependency); specs using anchors, aliases, tags or multiple documents
+are outside that subset and simply yield no seeds instead of breaking
+the crawl.
 
 ### Run Without Installing
 ```bash

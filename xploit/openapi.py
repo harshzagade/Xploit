@@ -37,6 +37,20 @@ def _fill_path_template(path: str) -> str:
     return _PATH_PARAM_RE.sub(_PLACEHOLDER_PATH, path)
 
 
+def _server_var_value(spec: object) -> str | None:
+    """A server-variable value as a string, or None when unusable.
+
+    YAML specs type their scalars, so a numeric default/enum (``default:
+    1``) is an int, not a string — accept ints/floats too. Booleans are
+    not meaningful variable values.
+    """
+    if isinstance(spec, str):
+        return spec
+    if isinstance(spec, (int, float)) and not isinstance(spec, bool):
+        return str(spec)
+    return None
+
+
 def _resolve_server_url(server: object, base_url: str) -> str | None:
     """Resolve one OpenAPI 3 server entry against the target URL.
 
@@ -54,12 +68,10 @@ def _resolve_server_url(server: object, base_url: str) -> str | None:
             spec = variables.get(name)
             replacement = None
             if isinstance(spec, dict):
-                if isinstance(spec.get("default"), str):
-                    replacement = spec["default"]
-                elif isinstance(spec.get("enum"), list) and spec["enum"]:
-                    first = spec["enum"][0]
-                    if isinstance(first, str):
-                        replacement = first
+                replacement = _server_var_value(spec.get("default"))
+                if replacement is None and isinstance(spec.get("enum"), list) \
+                        and spec["enum"]:
+                    replacement = _server_var_value(spec["enum"][0])
             if replacement is None:
                 return None
             raw = raw.replace("{" + name + "}", replacement)

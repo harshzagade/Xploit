@@ -1754,6 +1754,19 @@ class WebScanner:
             except (ValueError, TypeError):
                 continue
             entry_points.update(extract_openapi_paths(spec, self.root))
+        # YAML specs: same seeding for YAML-only API docs. PyYAML is not
+        # a dependency, so yamlmini parses the subset real specs use;
+        # anything outside that subset (or malformed YAML) yields no
+        # seeds and never breaks the crawl.
+        from .yamlmini import parse_yaml_subset
+        for spec_path in ("/openapi.yaml", "/swagger.yaml"):
+            spec_res = self._request("GET", urljoin(self.root, spec_path), quiet=True)
+            if not spec_res or spec_res.status_code >= 400:
+                continue
+            spec = parse_yaml_subset(spec_res.text)
+            if spec is None:
+                continue
+            entry_points.update(extract_openapi_paths(spec, self.root))
         return [url for url in entry_points
                 if self._in_scope(url) and not self._excluded(url)]
 

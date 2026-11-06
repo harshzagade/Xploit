@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Added
+- YAML OpenAPI spec seeding: `_discover_entry_points` now also fetches
+  `/openapi.yaml` and `/swagger.yaml` alongside the JSON spec paths, so
+  YAML-only API docs seed the crawl too. New stdlib-only
+  `xploit/yamlmini.py` (`parse_yaml_subset`) parses the subset real
+  specs use — block mappings/sequences, quoted/plain/flow scalars with
+  YAML typing, block scalars, comments, `---` markers — and returns
+  `None` for anything outside it (anchors, aliases, tags, explicit
+  keys, tabs, multi-document files) so an unparseable spec never breaks
+  the crawl. `xploit/openapi.py` now also accepts numeric server-variable
+  defaults/enums (YAML types its scalars; `default: 2` stringifies to
+  `"2"`). `tests/test_openapi_yaml.py` covers the parser, discovery and
+  a live fixture server.
 - `--dry-run` entry-point listing: `WebScanner(dry_run=True)` crawls and
   returns a `ScanResult` with status `"dry-run"`, no findings, and an
   `entry_points` list (crawled pages with query parameters, discovered
