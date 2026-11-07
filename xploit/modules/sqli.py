@@ -1,4 +1,5 @@
 from __future__ import annotations
+import json
 from urllib.parse import urlparse
 from .base import BaseModule
 from ..scanner import Finding, HIGH, mutate_query, SQL_ERRORS
@@ -19,6 +20,21 @@ class SQLInjectionModule(BaseModule):
         # the input order via the scanner's serialized dedupe.
         self.scanner.map_probes(self._check_url, list(self.scanner.pages))
         self.scanner.map_probes(self._check_form, list(self.scanner.forms))
+        # JSON-body API targets declared by a served OpenAPI/Swagger spec:
+        # their parameters live in POST bodies, not query strings or form
+        # fields, so they get the same technique chain via a JSON body.
+        self.scanner.map_probes(self._check_json_target,
+                                list(getattr(self.scanner, "json_targets", [])))
+
+    def _check_json_target(self, target):
+        # External JSON target: discovery already same-origin filters, but
+        # a hand-built scanner could carry one — never probe off-origin.
+        if urlparse(target.url).netloc and \
+                urlparse(target.url).netloc != urlparse(self.scanner.root).netloc:
+            return
+        for param in target.fields:
+            self._probe_param(target.url, param, target.method,
+                              target.fields, None, json_body=True)
 
     def _check_url(self, url):
         from urllib.parse import parse_qsl
@@ -44,7 +60,7 @@ class SQLInjectionModule(BaseModule):
                 (form.action, method, param))
             self._probe_param(form.action, param, form.method, form.inputs, hint)
 
-    def _probe_param(self, url, param, method, base_data, hint):
+    def _probe_param(self, url, param, method, base_data, hint, json_body=False):
         """Run the technique chain for one (url, param, method) target.
 
         hint=None or hint['changes']=True  ->  full chain as before.
@@ -52,30 +68,35 @@ class SQLInjectionModule(BaseModule):
           run error-based as usual; skip union and stacked;
           run time-based in reduced mode (first payload only).
           boolean is also skipped (no response signal = boolean can't confirm).
+
+        json_body=True sends every payload as a JSON object body
+        ({**base_data, param: payload}) instead of a query string or
+        form body — the OpenAPI-declared API path.
         """
         if hint is not None and not hint["changes"]:
             # Inert param: reduced chain
-            if self._test_error_based(url, param, method, base_data):
+            if self._test_error_based(url, param, method, base_data, json_body):
                 return
             # Skip union, boolean, stacked — no response signal to exploit
-            self._test_time_based(url, param, method, base_data, max_payloads=1)
+            self._test_time_based(url, param, method, base_data, max_payloads=1,
+                                  json_body=json_body)
         else:
             # Full chain (no hint, or hint shows changes)
-            if self._test_error_based(url, param, method, base_data):
+            if self._test_error_based(url, param, method, base_data, json_body):
                 return
-            if self._test_union_based(url, param, method, base_data):
+            if self._test_union_based(url, param, method, base_data, json_body):
                 return
-            if self._test_boolean_based(url, param, method, base_data):
+            if self._test_boolean_based(url, param, method, base_data, json_body):
                 return
-            if self._test_time_based(url, param, method, base_data):
+            if self._test_time_based(url, param, method, base_data, json_body=json_body):
                 return
-            self._test_stacked_queries(url, param, method, base_data)
+            self._test_stacked_queries(url, param, method, base_data, json_body)
 
     # -----------------------------------------------------------------------
     # Shared baseline cache
     # -----------------------------------------------------------------------
 
-    def _baseline(self, url, param, method, base_data=None):
+    def _baseline(self, url, param, method, base_data=None, json_body=False):
         """Fetch the baseline response for (url, param, method) once and cache.
 
         Uses the 'sqli_baseline_xploit' sentinel so the server sees a benign
@@ -87,13 +108,16 @@ class SQLInjectionModule(BaseModule):
         # retest paths) without run() having initialised the cache.
         if getattr(self, "_baseline_cache", None) is None:
             self._baseline_cache = {}
-        key = (url, param, method.upper() if method else "GET")
+        # The JSON-body variant is a different request shape from the form
+        # variant — same (url, param, method) must not share a baseline.
+        key = (url, param, method.upper() if method else "GET", json_body)
         if key not in self._baseline_cache:
-            res = self._send_payload(url, param, method, "sqli_baseline_xploit", base_data)
+            res = self._send_payload(url, param, method, "sqli_baseline_xploit",
+                                     base_data, json_body)
             self._baseline_cache[key] = res
         return self._baseline_cache[key]
 
-    def _test_error_based(self, url, param, method, base_data=None):
+    def _test_error_based(self, url, param, method, base_data=None, json_body=False):
         payloads = [
             "'", "\"", "')", "\")", "'))", "\"))",
             "' OR '1'='1", "\" OR \"1\"=\"1",
@@ -105,11 +129,11 @@ class SQLInjectionModule(BaseModule):
             "') OR ('a'='a",
         ]
         # Use shared baseline (fetched once per param across techniques).
-        baseline = self._baseline(url, param, method, base_data)
+        baseline = self._baseline(url, param, method, base_data, json_body)
         baseline_text = baseline.text.lower() if baseline else ""
 
         for payload in payloads:
-            res = self._send_payload(url, param, method, payload, base_data)
+            res = self._send_payload(url, param, method, payload, base_data, json_body)
             if not res:
                 continue
             res_text = res.text.lower()
@@ -117,10 +141,17 @@ class SQLInjectionModule(BaseModule):
                 if error in res_text and error not in baseline_text:
                     self._report(url, param, method, payload,
                                  f"New SQL error message appeared in response: {error}",
-                                 base_data, marker=error)
+                                 base_data, marker=error, json_body=json_body)
                     return True
 
-    def _send_payload(self, url, param, method, payload, base_data=None):
+    def _send_payload(self, url, param, method, payload, base_data=None, json_body=False):
+        if json_body:
+            # JSON-body target: the payload rides in a JSON object with the
+            # sibling fields at their placeholder values; requests sets
+            # Content-Type: application/json for the json= kwarg.
+            body = dict(base_data) if base_data else {}
+            body[param] = payload
+            return self.scanner._request(method, url, json=body)
         if method == "GET":
             # Pass sibling form fields so GET forms (action URL with no query
             # string) actually send the payload instead of dropping it.
@@ -130,7 +161,7 @@ class SQLInjectionModule(BaseModule):
             data[param] = payload
             return self.scanner._request("POST", url, data=data)
 
-    def _test_union_based(self, url, param, method, base_data=None):
+    def _test_union_based(self, url, param, method, base_data=None, json_body=False):
         payloads = [
             "' UNION SELECT NULL--",
             "' UNION SELECT NULL,NULL--",
@@ -140,11 +171,12 @@ class SQLInjectionModule(BaseModule):
             "' UNION ALL SELECT 1,2,3,4,5--",
             "') UNION SELECT NULL,NULL,NULL--",
         ]
-        baseline = self._send_payload(url, param, method, "union_baseline_xploit", base_data)
+        baseline = self._send_payload(url, param, method, "union_baseline_xploit",
+                                      base_data, json_body)
         baseline_text = baseline.text.lower() if baseline else ""
 
         for payload in payloads:
-            res = self._send_payload(url, param, method, payload, base_data)
+            res = self._send_payload(url, param, method, payload, base_data, json_body)
             if not res:
                 continue
             res_lower = res.text.lower()
@@ -152,20 +184,20 @@ class SQLInjectionModule(BaseModule):
             if matched:
                 self._report(url, param, method, payload,
                              "Union-based SQLi: SQL error appeared in response to UNION payload",
-                             base_data, marker=matched)
+                             base_data, marker=matched, json_body=json_body)
                 return True
 
-    def _test_boolean_based(self, url, param, method, base_data=None):
+    def _test_boolean_based(self, url, param, method, base_data=None, json_body=False):
         true_payloads  = ["' AND '1'='1", "' AND 1=1--", "') AND ('1'='1"]
         false_payloads = ["' AND '1'='2", "' AND 1=2--", "') AND ('1'='2"]
 
         # Use shared baseline (fetched once per param across techniques).
-        baseline = self._baseline(url, param, method, base_data)
+        baseline = self._baseline(url, param, method, base_data, json_body)
         baseline_len = len(baseline.text) if baseline else 0
 
         for true_p, false_p in zip(true_payloads, false_payloads):
-            true_res  = self._send_payload(url, param, method, true_p, base_data)
-            false_res = self._send_payload(url, param, method, false_p, base_data)
+            true_res  = self._send_payload(url, param, method, true_p, base_data, json_body)
+            false_res = self._send_payload(url, param, method, false_p, base_data, json_body)
             if not true_res or not false_res:
                 continue
             true_len  = len(true_res.text)
@@ -177,17 +209,18 @@ class SQLInjectionModule(BaseModule):
             if true_near_baseline and significant_diff:
                 self._report(url, param, method, true_p,
                              f"Boolean-based blind SQLi: TRUE({true_len}B) vs FALSE({false_len}B) — {abs(true_len - false_len)}B delta",
-                             base_data, marker="")
+                             base_data, marker="", json_body=json_body)
                 return True
 
-    def _timed_payload(self, url, param, method, payload, base_data=None):
+    def _timed_payload(self, url, param, method, payload, base_data=None, json_body=False):
         """Send a payload, returning (response, elapsed_seconds)."""
         import time
         start = time.monotonic()
-        res = self._send_payload(url, param, method, payload, base_data)
+        res = self._send_payload(url, param, method, payload, base_data, json_body)
         return res, time.monotonic() - start
 
-    def _test_time_based(self, url, param, method, base_data=None, max_payloads=None):
+    def _test_time_based(self, url, param, method, base_data=None, max_payloads=None,
+                         json_body=False):
         """Time-based blind SQLi: confirm via reproducible response delay.
 
         Fires DBMS-specific sleep payloads and requires the delay to reproduce
@@ -239,30 +272,30 @@ class SQLInjectionModule(BaseModule):
             payloads = payloads[:max_payloads]
 
         base_res, base_dt = self._timed_payload(
-            url, param, method, "sqli_baseline_xploit", base_data)
+            url, param, method, "sqli_baseline_xploit", base_data, json_body)
         if base_res is None:
             # No clean baseline: a delay against nothing proves nothing.
             return False
 
         for payload in payloads:
-            res, dt = self._timed_payload(url, param, method, payload, base_data)
+            res, dt = self._timed_payload(url, param, method, payload, base_data, json_body)
             if res is None:
                 continue
             if dt - base_dt < threshold:
                 continue
             # Delay observed — confirm it reproduces on a second firing.
-            res2, dt2 = self._timed_payload(url, param, method, payload, base_data)
+            res2, dt2 = self._timed_payload(url, param, method, payload, base_data, json_body)
             if res2 is not None and dt2 - base_dt >= threshold:
                 self._report(url, param, method, payload,
                              f"Time-based blind SQLi: response delayed "
                              f"{dt:.1f}s / {dt2:.1f}s vs {base_dt:.1f}s baseline "
                              f"(>= {threshold:g}s differential, reproduced twice)",
                              base_data, marker="",
-                             kind="timing", delay_s=threshold)
+                             kind="timing", delay_s=threshold, json_body=json_body)
                 return True
         return False
 
-    def _test_stacked_queries(self, url, param, method, base_data=None):
+    def _test_stacked_queries(self, url, param, method, base_data=None, json_body=False):
         hint = (getattr(self.scanner, "target_profile", None) or {}).get("dbms_hint", "unknown")
         # EXEC sp_MSforeachtable is MSSQL-only; skip it when the target is
         # fingerprinted as a different DBMS. information_schema is generic
@@ -273,11 +306,11 @@ class SQLInjectionModule(BaseModule):
         payloads.append("1; SELECT COUNT(*) FROM information_schema.tables--")
 
         # Use shared baseline (fetched once per param across techniques).
-        baseline = self._baseline(url, param, method, base_data)
+        baseline = self._baseline(url, param, method, base_data, json_body)
         baseline_text = baseline.text.lower() if baseline else ""
 
         for payload in payloads:
-            res = self._send_payload(url, param, method, payload, base_data)
+            res = self._send_payload(url, param, method, payload, base_data, json_body)
             if not res:
                 continue
             indicators = ["multiple statements", "syntax near", "expects parameter"]
@@ -286,11 +319,11 @@ class SQLInjectionModule(BaseModule):
             if matched:
                 self._report(url, param, method, payload,
                              "Stacked queries SQLi: Error response suggests multiple statement support",
-                             base_data, marker=matched)
+                             base_data, marker=matched, json_body=json_body)
                 return True
 
     def _report(self, url, param, method, payload, evidence, base_data=None,
-                marker="", kind="marker", delay_s=0.0):
+                marker="", kind="marker", delay_s=0.0, json_body=False):
         from urllib.parse import urlencode
         ev_lower = evidence.lower()
         if "union" in ev_lower:
@@ -321,7 +354,13 @@ class SQLInjectionModule(BaseModule):
         )
         # Replayable proof: the exact request that triggered the finding, so the
         # evidence gate can verify it and --retest can re-fire it.
-        if method == "GET":
+        if json_body:
+            body = dict(base_data) if base_data else {}
+            body[param] = payload
+            # The JSON object string is the proof body; retest replays it
+            # with json= (see retest.py), not as urlencoded form data.
+            proof_url, proof_data = url, json.dumps(body)
+        elif method == "GET":
             proof_url, proof_data = mutate_query(url, param, payload, base_data), ""
         else:
             data = dict(base_data) if base_data else {}

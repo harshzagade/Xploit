@@ -32,7 +32,12 @@
     filled, query params seeded) as crawl entry points, so API-only routes
     no linked page mentions still get probed (YAML specs are parsed by a
     stdlib-only subset parser — no PyYAML needed; anchors, aliases, tags
-    and multi-document files are not supported and simply yield no seeds)
+    and multi-document files are not supported and simply yield no seeds).
+    Operations with a declared `application/json` requestBody are also
+    collected as JSON-body targets: the SQLi and XSS modules probe each
+    declared body field with the same payload chains they run against
+    query params and form fields, sending the payload as a JSON object
+    (`$ref` and `allOf` schemas resolve; POST/PUT/PATCH only)
   - Form extraction and parameter analysis
   - Up to 500 pages per scan
 
@@ -212,6 +217,16 @@ a stdlib-only subset parser in `xploit/yamlmini.py` (PyYAML is not a
 dependency); specs using anchors, aliases, tags or multiple documents
 are outside that subset and simply yield no seeds instead of breaking
 the crawl.
+
+Operations with a declared `application/json` requestBody get one more
+step: their body fields are probed as JSON. The SQLi module runs its full
+technique chain (error, union, boolean, time-based, stacked) with each
+payload sent as a JSON object body, and the XSS module checks whether a
+payload reflects into the JSON response (reported as XSS-003 at MEDIUM —
+reflection into a JSON body only becomes XSS if a client-side sink renders
+the value as HTML). JSON findings carry a JSON proof body, so `--retest`
+replays them with `json=` instead of form data. `--dry-run` lists the
+JSON targets alongside pages and forms (kind `json`).
 
 ### Run Without Installing
 ```bash

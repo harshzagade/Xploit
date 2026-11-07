@@ -1,8 +1,9 @@
 from __future__ import annotations
+import json
 import re
 from urllib.parse import urlparse, urlunparse, urlencode
 from .base import BaseModule
-from ..scanner import Finding, HIGH, mutate_query
+from ..scanner import Finding, HIGH, MEDIUM, mutate_query
 
 class XSSModule(BaseModule):
     name = "Cross-Site Scripting"
@@ -54,7 +55,10 @@ class XSSModule(BaseModule):
             [("url", payload, url)
              for payload in payloads for url in list(self.scanner.pages)] +
             [("form", payload, form)
-             for payload in payloads for form in self.scanner.forms]
+             for payload in payloads for form in self.scanner.forms] +
+            [("json", payload, target)
+             for payload in payloads
+             for target in list(getattr(self.scanner, "json_targets", []))]
         )
         # Same nesting order as the old sequential loops, so finding order
         # is unchanged; the _confirmed set plus the scanner-level dedupe keep
@@ -65,6 +69,8 @@ class XSSModule(BaseModule):
         kind, payload, target = item
         if kind == "url":
             self._check_url(target, payload)
+        elif kind == "json":
+            self._check_json(target, payload)
         else:
             self._check_form(target, payload)
 
@@ -102,6 +108,69 @@ class XSSModule(BaseModule):
                     # Reflected: probe whether the payload was stored.
                     benign_url = mutate_query(url, param, "xploit_benign_recheck")
                     self._check_persistence(benign_url, base, param, payload)
+
+    def _check_json(self, target, payload):
+        """Probe one JSON-body API target with one payload.
+
+        Each declared body field carries the payload in turn (siblings at
+        their placeholder values). An HTML response reflecting into an
+        executable context is ordinary reflected XSS (XSS-001, same bar as
+        the form path). A verbatim reflection inside a JSON response body
+        is weaker — it only becomes XSS if a client-side sink renders the
+        value as HTML — so it is reported separately as XSS-003 at MEDIUM
+        confidence, with the sink requirement stated in the evidence.
+        """
+        # Discovery already same-origin filters, but a hand-built scanner
+        # could carry an off-origin target — never probe one.
+        if urlparse(target.url).netloc and \
+                urlparse(target.url).netloc != urlparse(self.scanner.root).netloc:
+            return
+        base = self._base_url(target.url)
+        for param in target.fields:
+            if (base, param) in self._confirmed or \
+                    (base, param, "json") in self._confirmed:
+                continue
+            body = dict(target.fields)
+            body[param] = payload
+            proof_data = json.dumps(body)
+            res = self.scanner._request(target.method, target.url, json=body)
+            if not res:
+                continue
+            if self._analyze_reflection(res, base, param, payload, target.method,
+                                        proof_url=target.url, proof_data=proof_data):
+                self._confirmed.add((base, param, "json"))
+                continue
+            if payload not in res.text:
+                continue
+            self._confirmed.add((base, param, "json"))
+            finding = Finding(
+                id="XSS-003",
+                name="Reflected XSS (JSON response)",
+                category="Cross-Site Scripting",
+                severity=MEDIUM,
+                confidence="Medium",
+                url=base,
+                parameter=param,
+                method=target.method,
+                evidence=f"Payload reflected verbatim in the JSON response "
+                         f"body: {payload[:60]} (static reflection only — "
+                         f"execution needs a client-side sink that renders "
+                         f"the value as HTML)",
+                trigger=f"payload={payload}",
+                impact="The API echoes attacker-controlled input into its JSON "
+                       "response. If a client-side sink inserts that value "
+                       "into the DOM as HTML, attackers could run script in "
+                       "a victim's session.",
+                remediation="Encode API values for their rendering context "
+                            "on the client, and validate/encode on the server.",
+                cwe="CWE-79"
+            )
+            # The reflected payload is the response marker: re-firing the
+            # proof request (JSON body, replayed via retest.py) and finding
+            # the payload again confirms the finding.
+            self.attach_proof(finding, method=target.method, url=target.url,
+                              marker=payload, data=proof_data)
+            self.add_finding(finding)
 
     def _check_form(self, form, payload):
         # External form action: probing a third-party endpoint is out of

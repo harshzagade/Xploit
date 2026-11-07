@@ -3,6 +3,26 @@
 ## Unreleased
 
 ### Added
+- JSON-body injection probing: operations with a declared
+  `application/json` requestBody in a served OpenAPI/Swagger spec are
+  now collected as JSON-body targets (`xploit/openapi.py`:
+  `extract_json_targets` + `JsonTarget` — `$ref` and `allOf` schemas
+  resolve, path templates fill with `1`, declared query params seed
+  with `xploit`, POST/PUT/PATCH only; same scope/exclude filtering as
+  seeded URLs). The SQLi module runs its full technique chain against
+  each declared body field, sending payloads as a JSON object body with
+  sibling fields at placeholder values, and the XSS module checks for
+  verbatim reflection into JSON responses (new XSS-003 at MEDIUM —
+  reflection into a JSON body only becomes XSS if a client-side sink
+  renders the value as HTML; an HTML response reflecting into an
+  executable context still reports as XSS-001). JSON findings carry a
+  JSON proof body and `retest.py` replays those proofs with `json=`
+  instead of urlencoded form data. `WebScanner.json_targets` is
+  re-derived on every scan (resume re-fetches the spec), counted in
+  `target_profile["json_targets"]`, and listed by `--dry-run` as kind
+  `json`. `tests/test_json_body.py` covers extraction, `$ref`/`allOf`,
+  discovery filtering, and live fixture-server SQLi/XSS/retest/dry-run
+  cases. Version 1.12.0 -> 1.13.0.
 - Nested sitemap recursion: `_discover_entry_points` now follows
   `<sitemap>` entries inside sitemap index files via new
   `WebScanner._collect_sitemap_urls` — `<sitemap>` entries recurse,

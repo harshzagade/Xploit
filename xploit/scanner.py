@@ -134,7 +134,8 @@ class Finding:
     # confirmed it. Prose in `evidence` alone is analyst-readable, not proof.
     proof_method: str = ""
     proof_url: str = ""
-    proof_data: str = ""    # urlencoded POST body used to replay the proof
+    proof_data: str = ""    # POST body used to replay the proof: urlencoded
+    # form data, or a JSON object string for JSON-body proofs (see retest).
     proof_marker: str = ""  # response substring (lowercased) confirming the finding
     # proof_kind "timing": confirmation was a reproducible response delay, not
     # a substring. proof_delay_s is the delay threshold (seconds) the proof
@@ -773,6 +774,12 @@ class WebScanner:
         self.errors: list[str] = []
         self.pages: dict[str, requests.Response] = {}
         self.forms: list[FormTarget] = []
+        # JSON-body API targets declared by a served OpenAPI/Swagger spec
+        # (see _discover_entry_points). Populated during the crawl, so the
+        # injection modules can probe JSON fields the same way they probe
+        # query params and form fields. Re-derived on every scan — a
+        # resumed scan re-fetches the spec, so checkpoints need not store it.
+        self.json_targets: list = []
         self._normalized_seen: Set[str] = set()
         self._checks_run: list[str] = []
         self._last_request_at = 0.0
@@ -1417,6 +1424,7 @@ class WebScanner:
             "dbms_signals": dbms_signals,
             "html_pages": html_pages,
             "forms": len(self.forms),
+            "json_targets": len(self.json_targets),
             "query_params": query_params,
             "external_form_actions": external_form_actions,
         }
@@ -1688,8 +1696,10 @@ class WebScanner:
     def _dry_run_entry_points(self) -> list[dict]:
         """Build the --dry-run listing from the finished crawl.
 
-        One dict per crawled page (its query parameters) and one per
-        discovered form (action, method, field names, source page).
+        One dict per crawled page (its query parameters), one per
+        discovered form (action, method, field names, source page), and
+        one per JSON-body API target declared by a served OpenAPI spec
+        (URL, method, body field names).
         Exact duplicates collapse (a form posting to its own page URL
         with the same fields is still a form entry, not a page entry —
         the kinds differ, so both are kept). Order is crawl order, so
@@ -1710,6 +1720,15 @@ class WebScanner:
                      "method": form.method.upper(),
                      "parameters": sorted(form.inputs),
                      "page_url": form.page_url}
+            key = (entry["kind"], entry["url"], entry["method"],
+                   tuple(entry["parameters"]))
+            if key not in seen:
+                seen.add(key)
+                entries.append(entry)
+        for target in self.json_targets:
+            entry = {"kind": "json", "url": target.url,
+                     "method": target.method.upper(),
+                     "parameters": sorted(target.fields)}
             key = (entry["kind"], entry["url"], entry["method"],
                    tuple(entry["parameters"]))
             if key not in seen:
@@ -1742,8 +1761,11 @@ class WebScanner:
         # declared paths become entry points too (same scope/exclude
         # filtering as everything else below; a missing or broken spec
         # is silently skipped — it is a best-effort bonus, not a crawl
-        # requirement).
-        from .openapi import extract_openapi_paths
+        # requirement). The same specs also declare JSON-body operations,
+        # collected into self.json_targets so the injection modules can
+        # probe JSON fields the way they probe query params and form fields.
+        from .openapi import extract_json_targets, extract_openapi_paths
+        json_targets: dict[tuple[str, str], object] = {}
         for spec_path in ("/openapi.json", "/swagger.json"):
             spec_res = self._request("GET", urljoin(self.root, spec_path), quiet=True)
             if not spec_res or spec_res.status_code >= 400:
@@ -1753,6 +1775,8 @@ class WebScanner:
             except (ValueError, TypeError):
                 continue
             entry_points.update(extract_openapi_paths(spec, self.root))
+            for target in extract_json_targets(spec, self.root):
+                json_targets.setdefault((target.url, target.method), target)
         # YAML specs: same seeding for YAML-only API docs. PyYAML is not
         # a dependency, so yamlmini parses the subset real specs use;
         # anything outside that subset (or malformed YAML) yields no
@@ -1766,6 +1790,14 @@ class WebScanner:
             if spec is None:
                 continue
             entry_points.update(extract_openapi_paths(spec, self.root))
+            for target in extract_json_targets(spec, self.root):
+                json_targets.setdefault((target.url, target.method), target)
+        # JSON targets get the same scope/exclude filtering as seeded URLs;
+        # a target whose URL is out of scope is dropped entirely.
+        self.json_targets = [
+            target for target in json_targets.values()
+            if self._in_scope(target.url) and not self._excluded(target.url)
+        ]
         return [url for url in entry_points
                 if self._in_scope(url) and not self._excluded(url)]
 

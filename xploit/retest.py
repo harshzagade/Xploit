@@ -85,7 +85,20 @@ def retest_findings(scanner: "WebScanner", findings: "list[Finding]") -> dict[st
 
         kwargs: dict = {}
         if finding.proof_method == "POST" and finding.proof_data:
-            kwargs["data"] = dict(parse_qsl(finding.proof_data, keep_blank_values=True))
+            # JSON-body proof: proof_data is a JSON object string (the
+            # exact body that triggered the finding). Anything else is
+            # the historical urlencoded form body.
+            stripped = finding.proof_data.lstrip()
+            if stripped.startswith("{"):
+                try:
+                    import json as _json
+                    kwargs["json"] = _json.loads(finding.proof_data)
+                except ValueError:
+                    kwargs["data"] = dict(parse_qsl(finding.proof_data,
+                                                    keep_blank_values=True))
+            else:
+                kwargs["data"] = dict(parse_qsl(finding.proof_data,
+                                                keep_blank_values=True))
 
         is_timing = finding.proof_kind == "timing" and finding.proof_delay_s > 0
         try:

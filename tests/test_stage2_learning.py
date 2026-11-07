@@ -114,7 +114,7 @@ def test_sqli_baseline_cache_fetches_once_per_param():
     mod = SQLInjectionModule(FakeScanner())
     calls = {"n": 0}
 
-    def stub_send(url, param, method, payload, base_data=None):
+    def stub_send(url, param, method, payload, base_data=None, json_body=False):
         calls["n"] += 1
         return Resp("base")
 

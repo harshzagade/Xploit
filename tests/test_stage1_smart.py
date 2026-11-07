@@ -262,7 +262,7 @@ class _CapturingSQLiModule(SQLInjectionModule):
         super().__init__(scanner)
         self.attempted_payloads: list[str] = []
 
-    def _timed_payload(self, url, param, method, payload, base_data=None):
+    def _timed_payload(self, url, param, method, payload, base_data=None, json_body=False):
         self.attempted_payloads.append(payload)
         # Return a fast response so delay checks always fail (dt ~= 0).
         return Resp(), 0.001
@@ -326,7 +326,7 @@ class TestSQLiPayloadFiltering:
         m = SQLInjectionModule(scanner)
         fired_payloads: list[str] = []
 
-        def _fake_send(url, param, method, payload, base_data=None):
+        def _fake_send(url, param, method, payload, base_data=None, json_body=False):
             fired_payloads.append(payload)
             return Resp()
 
@@ -340,7 +340,7 @@ class TestSQLiPayloadFiltering:
         m = SQLInjectionModule(scanner)
         fired_payloads: list[str] = []
 
-        def _fake_send(url, param, method, payload, base_data=None):
+        def _fake_send(url, param, method, payload, base_data=None, json_body=False):
             fired_payloads.append(payload)
             return Resp()
 
@@ -356,7 +356,7 @@ class TestSQLiPayloadFiltering:
         m = SQLInjectionModule(scanner)
         fired_payloads: list[str] = []
 
-        def _fake_send(url, param, method, payload, base_data=None):
+        def _fake_send(url, param, method, payload, base_data=None, json_body=False):
             fired_payloads.append(payload)
             return Resp()
 
