@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Added
+- SARIF output format: `--format sarif` renders a SARIF 2.1.0 document
+  (`xploit/reporting.py`: `render_sarif_report` / `render_sarif_reports`)
+  that GitHub code scanning and other SARIF consumers can ingest — one
+  run per scan result, one rule per distinct finding id (first-seen
+  order, with CWE + category in properties), one result per finding
+  (ruleId, level, evidence message, finding URL as the artifact
+  location, plus parameter/method/confidence/verified/remediation in
+  properties). Severity maps onto SARIF levels: HIGH -> error, MEDIUM
+  -> warning, LOW/INFO -> note; unknown severities default to warning.
+  Multi-target runs produce one run per target. `tests/test_sarif_format.py`
+  covers the document shape, rule dedupe, level mapping, result fields,
+  empty findings, multi-target runs and CLI parsing. Version 1.13.0 -> 1.14.0.
 - JSON-body injection probing: operations with a declared
   `application/json` requestBody in a served OpenAPI/Swagger spec are
   now collected as JSON-body targets (`xploit/openapi.py`:

@@ -45,7 +45,7 @@
   - Detailed findings with severity ratings (HIGH/MEDIUM/LOW)
   - CWE classifications for all vulnerabilities
   - Evidence, impact assessment, and remediation guidance
-  - Text, JSON and CSV output formats (CSV: one row per finding — id, severity, url, parameter, evidence — for spreadsheet pipelines)
+  - Text, JSON, CSV and SARIF output formats (CSV: one row per finding — id, severity, url, parameter, evidence — for spreadsheet pipelines; SARIF 2.1.0: one rule per finding id and one result per finding, for GitHub code scanning)
   - `--output PATH` saves the report to a file (ANSI colors stripped)
 
 - **Evidence-Gated Findings**

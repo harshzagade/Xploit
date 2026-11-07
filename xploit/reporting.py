@@ -269,6 +269,111 @@ def render_csv_report(result: ScanResult) -> str:
     return render_csv_reports([result])
 
 
+# SARIF 2.1.0 output for `--format sarif`: GitHub code scanning and other
+# SARIF consumers ingest findings with rule IDs, severity levels and the
+# URL where each finding was observed. One run per scan result; one rule
+# per distinct finding id (first-seen order); one result per finding.
+# Severity mapping follows the SARIF level vocabulary: HIGH findings are
+# errors, MEDIUM are warnings, LOW/INFO are notes.
+_SARIF_LEVEL = {"HIGH": "error", "MEDIUM": "warning", "LOW": "note",
+                "INFO": "note"}
+_SARIF_SCHEMA = "https://json.schemastore.org/sarif-2.1.0.json"
+
+
+def _sarif_rule(finding: Finding) -> dict:
+    rule: dict = {
+        "id": finding.id,
+        "name": finding.id.replace("-", ""),
+        "shortDescription": {"text": finding.name},
+        "fullDescription": {"text": finding.impact or finding.name},
+        "defaultConfiguration": {
+            "level": _SARIF_LEVEL.get(finding.severity, "warning"),
+        },
+        "help": {"text": finding.remediation or finding.name},
+    }
+    properties: dict = {"category": finding.category}
+    if finding.cwe:
+        properties["cwe"] = finding.cwe
+        properties["tags"] = ["security", finding.cwe]
+    else:
+        properties["tags"] = ["security"]
+    rule["properties"] = properties
+    return rule
+
+
+def _sarif_result(finding: Finding) -> dict:
+    result: dict = {
+        "ruleId": finding.id,
+        "level": _SARIF_LEVEL.get(finding.severity, "warning"),
+        "message": {"text": finding.evidence},
+        "locations": [{
+            "physicalLocation": {
+                "artifactLocation": {"uri": finding.url},
+            },
+        }],
+    }
+    properties: dict = {
+        "confidence": finding.confidence,
+        "verified": finding.verified,
+    }
+    if finding.parameter:
+        properties["parameter"] = finding.parameter
+    if finding.method:
+        properties["method"] = finding.method
+    if finding.cwe:
+        properties["cwe"] = finding.cwe
+    if finding.impact:
+        properties["impact"] = finding.impact
+    if finding.remediation:
+        properties["remediation"] = finding.remediation
+    result["properties"] = properties
+    return result
+
+
+def _sarif_run(result: ScanResult) -> dict:
+    rules: list[dict] = []
+    seen_ids: set[str] = set()
+    for finding in result.findings:
+        if finding.id not in seen_ids:
+            seen_ids.add(finding.id)
+            rules.append(_sarif_rule(finding))
+    return {
+        "tool": {
+            "driver": {
+                "name": "Xploit",
+                "version": __version__,
+                "informationUri": "https://github.com/harshzagade/Xploit",
+                "rules": rules,
+            },
+        },
+        "results": [_sarif_result(f) for f in result.findings],
+        "properties": {
+            "target": result.normalized_target,
+            "scanMode": result.scan_mode,
+            "startedAt": result.started_at,
+            "durationSeconds": result.duration_seconds,
+        },
+    }
+
+
+def render_sarif_reports(results: list[ScanResult]) -> str:
+    """Render one or more scan results as a SARIF 2.1.0 document.
+
+    Multi-target runs produce one run per target, so a single SARIF file
+    can carry the whole run (like the CSV format's single header row).
+    """
+    document = {
+        "$schema": _SARIF_SCHEMA,
+        "version": "2.1.0",
+        "runs": [_sarif_run(r) for r in results],
+    }
+    return json.dumps(document, indent=2, sort_keys=True)
+
+
+def render_sarif_report(result: ScanResult) -> str:
+    return render_sarif_reports([result])
+
+
 def write_report(content: str, output_path: str) -> None:
     path = Path(output_path).expanduser()
     path.parent.mkdir(parents=True, exist_ok=True)
