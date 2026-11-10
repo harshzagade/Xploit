@@ -45,7 +45,7 @@
   - Detailed findings with severity ratings (HIGH/MEDIUM/LOW)
   - CWE classifications for all vulnerabilities
   - Evidence, impact assessment, and remediation guidance
-  - Text, JSON, CSV and SARIF output formats (CSV: one row per finding — id, severity, url, parameter, evidence — for spreadsheet pipelines; SARIF 2.1.0: one rule per finding id and one result per finding, for GitHub code scanning)
+  - Text, JSON, CSV, SARIF and HTML output formats (CSV: one row per finding — id, severity, url, parameter, evidence — for spreadsheet pipelines; SARIF 2.1.0: one rule per finding id and one result per finding, for GitHub code scanning; HTML: a single self-contained report with severity-coloured findings, evidence, impact and remediation, for sharing with clients)
   - `--output PATH` saves the report to a file (ANSI colors stripped)
 
 - **Evidence-Gated Findings**
@@ -134,6 +134,11 @@ The tally (`confirmed` / `fixed` / `unverifiable` / `skipped`) is stored on the 
 ### Save Report to File
 ```bash
 xploit https://target.example --format json --output report.json --quiet
+```
+
+### HTML Report for Sharing
+```bash
+xploit https://target.example --format html --output report.html --quiet
 ```
 
 ---
@@ -399,7 +404,7 @@ options:
                         for faster targeted scans (e.g. --modules xss,sqli);
                         may be repeated. Valid modules: general, exposure,
                         data, sqli, xss, cmd, logic, auth, advanced, brute
-  --format {text,json,csv}
+  --format {text,json,csv,sarif,html}
                         output format
   --output PATH         write the report to a file (ANSI colors stripped)
   --retest              re-fire each finding's proof request to confirm it

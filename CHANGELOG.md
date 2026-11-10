@@ -3,6 +3,20 @@
 ## Unreleased
 
 ### Added
+- HTML report format: `--format html` renders a single self-contained
+  HTML document (`xploit/reporting.py`: `render_html_report` /
+  `render_html_reports`) — inline CSS, no external resources — for
+  sharing with clients who will not read terminal output. Findings are
+  grouped by severity with coloured badges and carry URL, parameter,
+  method, evidence, verified status, impact and remediation; the header
+  shows target, mode, duration, coverage and the severity summary with
+  the verified count. Every finding is included (like JSON/CSV) and all
+  finding text is HTML-escaped, so reflected payloads render as text,
+  never markup. Multi-target runs produce one section per target in a
+  single document. `tests/test_html_format.py` covers the document
+  shape, summary counts, field presence, payload escaping, severity
+  classes, empty/unreachable targets, multi-target sections and CLI
+  parsing. Version 1.14.0 -> 1.15.0.
 - SARIF output format: `--format sarif` renders a SARIF 2.1.0 document
   (`xploit/reporting.py`: `render_sarif_report` / `render_sarif_reports`)
   that GitHub code scanning and other SARIF consumers can ingest — one

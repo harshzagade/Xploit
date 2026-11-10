@@ -6,6 +6,7 @@ severity mapped onto the SARIF level vocabulary.
 """
 import json
 
+from xploit import __version__
 from xploit.cli import build_parser
 from xploit.reporting import render_sarif_report, render_sarif_reports
 from xploit.scanner import Finding, ScanResult
@@ -45,7 +46,7 @@ def test_sarif_document_shape():
     assert len(doc["runs"]) == 1
     run = doc["runs"][0]
     assert run["tool"]["driver"]["name"] == "Xploit"
-    assert run["tool"]["driver"]["version"] == "1.14.0"
+    assert run["tool"]["driver"]["version"] == __version__
     assert run["properties"]["target"] == "example.com"
     assert len(run["results"]) == 1
 

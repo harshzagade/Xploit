@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import html
 import io
 import json
 import re
@@ -372,6 +373,135 @@ def render_sarif_reports(results: list[ScanResult]) -> str:
 
 def render_sarif_report(result: ScanResult) -> str:
     return render_sarif_reports([result])
+
+
+# HTML output for `--format html`: a single self-contained report (inline
+# CSS, no external resources) for sharing with clients who will not read
+# terminal output. Every finding is included (like JSON/CSV, unlike the
+# text report's --min-severity collapsing), grouped by severity, with
+# severity-coloured badges and the evidence/impact/remediation fields.
+# All finding text is HTML-escaped: evidence can carry reflected payloads
+# (`<script>`, `<svg onload=...>`) that must render as text, never markup.
+_SEV_CLASS = {"HIGH": "sev-high", "MEDIUM": "sev-medium",
+              "LOW": "sev-low", "INFO": "sev-info"}
+_SEV_ORDER = ("HIGH", "MEDIUM", "LOW", "INFO")
+
+_HTML_CSS = """
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+margin:2em auto;max-width:960px;padding:0 1em;color:#1f2328;
+background:#fff;line-height:1.5}
+h1{font-size:1.6em;margin-bottom:.1em}
+h2{font-size:1.2em;border-bottom:1px solid #d0d7de;padding-bottom:.3em;
+margin-top:2em}
+.meta{color:#656d76;font-size:.9em}
+.summary{margin:1em 0}
+.badge{display:inline-block;padding:.1em .6em;border-radius:999px;
+color:#fff;font-weight:600;font-size:.85em;margin-right:.4em}
+.sev-high{background:#d1242f}.sev-medium{background:#9a6700}
+.sev-low{background:#0969da}.sev-info{background:#656d76}
+.finding{border:1px solid #d0d7de;border-left-width:6px;border-radius:6px;
+padding:.8em 1em;margin:1em 0}
+.finding.sev-high{border-left-color:#d1242f}
+.finding.sev-medium{border-left-color:#9a6700}
+.finding.sev-low{border-left-color:#0969da}
+.finding.sev-info{border-left-color:#656d76}
+.finding h3{margin:.1em 0 .4em;font-size:1.05em}
+.finding dl{display:grid;grid-template-columns:8em 1fr;gap:.2em .8em;
+margin:.4em 0 0}
+.finding dt{font-weight:600;color:#656d76}
+.finding dd{margin:0;overflow-wrap:anywhere}
+.finding code{background:#f6f8fa;padding:.1em .3em;border-radius:4px;
+overflow-wrap:anywhere}
+.verified{color:#1a7f37;font-weight:600}
+.unverified{color:#9a6700;font-weight:600}
+footer{color:#656d76;font-size:.85em;margin-top:2em}
+""".strip()
+
+
+def _html_finding(finding: Finding) -> str:
+    """One finding as an HTML card, all values escaped."""
+    sev = finding.severity
+    cls = _SEV_CLASS.get(sev, "sev-info")
+    cwe = f" &middot; {html.escape(finding.cwe)}" if finding.cwe else ""
+    verified = ("<span class=\"verified\">verified &mdash; replayable proof "
+                "attached</span>" if finding.verified
+                else "<span class=\"unverified\">unverified</span>")
+    rows = [
+        ("URL", html.escape(finding.url)),
+        ("Parameter", html.escape(finding.parameter)),
+        ("Method", html.escape(finding.method) if finding.method != "GET" else ""),
+        ("Evidence", f"<code>{html.escape(finding.evidence)}</code>"),
+        ("Verified", verified),
+        ("Impact", html.escape(finding.impact)),
+        ("Remediation", html.escape(finding.remediation)),
+    ]
+    body = "".join(
+        f"<dt>{label}</dt><dd>{value}</dd>"
+        for label, value in rows if value
+    )
+    return (
+        f"<article class=\"finding {cls}\">"
+        f"<h3><span class=\"badge {cls}\">{html.escape(sev)}</span> "
+        f"{html.escape(finding.name)}{cwe}</h3>"
+        f"<dl>{body}</dl></article>"
+    )
+
+
+def _html_section(result: ScanResult) -> str:
+    """One scan result as the body section of an HTML report."""
+    summary = summarize_findings(result.findings)
+    total = len(result.findings)
+    verified = sum(1 for f in result.findings if f.verified)
+    badges = "".join(
+        f"<span class=\"badge {_SEV_CLASS[sev]}\">{sev} {summary[sev]}</span>"
+        for sev in _SEV_ORDER if summary[sev]
+    ) or "<span class=\"badge sev-info\">0 findings</span>"
+    meta = (f"{html.escape(result.scan_mode.upper())} &middot; "
+            f"{result.duration_seconds:g}s &middot; "
+            f"{html.escape(result.started_at)} &middot; "
+            f"{len(result.pages_seen)} pages &middot; "
+            f"{result.forms_seen} forms")
+    parts = [
+        f"<h2>{html.escape(result.normalized_target)}</h2>",
+        f"<p class=\"meta\">{meta}</p>",
+        f"<p class=\"summary\">{badges} &nbsp; "
+        f"{verified}/{total} verified</p>",
+    ]
+    if result.status == "unreachable":
+        parts.append("<p><strong>Target was unreachable.</strong></p>")
+    elif not result.findings:
+        parts.append("<p><strong>No findings detected.</strong></p>")
+    else:
+        for sev in _SEV_ORDER:
+            group = [f for f in result.findings if f.severity == sev]
+            if not group:
+                continue
+            parts.append(f"<h3>{sev} ({len(group)})</h3>")
+            parts.extend(_html_finding(f)
+                         for f in sorted(group, key=_finding_sort_key))
+    return "\n".join(parts)
+
+
+def render_html_reports(results: list[ScanResult]) -> str:
+    """Render one or more scan results as a single self-contained HTML
+    document. Multi-target runs get one section per target, like the CSV
+    format's single table and the SARIF format's one run per target."""
+    title = "Xploit Scan Report"
+    sections = "\n".join(_html_section(r) for r in results)
+    return (
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n"
+        f"<title>{title}</title>\n"
+        f"<style>\n{_HTML_CSS}\n</style>\n</head>\n<body>\n"
+        f"<h1>{title}</h1>\n"
+        f"<p class=\"meta\">xploit v{__version__}</p>\n"
+        f"{sections}\n"
+        f"<footer>Generated by Xploit v{__version__}</footer>\n"
+        "</body>\n</html>"
+    )
+
+
+def render_html_report(result: ScanResult) -> str:
+    return render_html_reports([result])
 
 
 def write_report(content: str, output_path: str) -> None:
