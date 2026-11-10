@@ -122,6 +122,16 @@ def build_parser() -> argparse.ArgumentParser:
                              "--header 'User-Agent: ...' override still wins")
     parser.add_argument("--header", action="append", default=[], metavar="NAME: VALUE", help="add a custom HTTP header; may be repeated")
     parser.add_argument("--cookie", action="append", default=[], metavar="NAME=VALUE", help="add a cookie; may be repeated")
+    parser.add_argument("--login-url", default=None, metavar="URL",
+                        help="submit the login form at URL once before the "
+                             "scan and reuse the session cookie it sets "
+                             "(requires --login-user and --login-pass; "
+                             "single-target scans only)")
+    parser.add_argument("--login-user", default=None, metavar="USER",
+                        help="username for --login-url")
+    parser.add_argument("--login-pass", default=None, metavar="PASS",
+                        help="password for --login-url (visible in the "
+                             "process list; prefer --cookie for shared shells)")
     parser.add_argument("--insecure", action="store_true", help="disable SSL certificate verification")
     parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     parser.add_argument("--quiet", action="store_true", help="suppress banner and progress output")
@@ -238,6 +248,21 @@ def _write_output(args: argparse.Namespace, content: str, colors: bool) -> None:
         print(content)
 
 
+def validate_login_args(args: argparse.Namespace) -> str | None:
+    """Login flags are all-or-nothing: `--login-url` needs both
+    credentials, and credentials without a login URL are meaningless.
+    Returns an error message, or None when the flags are consistent."""
+    given = [getattr(args, "login_url", None),
+             getattr(args, "login_user", None),
+             getattr(args, "login_pass", None)]
+    if all(v is None for v in given):
+        return None
+    if any(v is None for v in given):
+        return ("--login-url, --login-user and --login-pass must be given "
+                "together")
+    return None
+
+
 def run_scan(args: argparse.Namespace) -> int:
     # A dry-run lists entry points instead of scanning, so options that
     # only make sense for a real scan fail fast rather than being
@@ -255,6 +280,15 @@ def run_scan(args: argparse.Namespace) -> int:
                         not args.no_color), file=sys.stderr)
             return 2
     targets = target_list(args)
+    login_error = validate_login_args(args)
+    if login_error:
+        print(color(f"error: {login_error}", HIGH, not args.no_color),
+              file=sys.stderr)
+        return 2
+    if getattr(args, "login_url", None) and len(targets) > 1:
+        print(color("error: --login-url supports single-target scans only",
+                    HIGH, not args.no_color), file=sys.stderr)
+        return 2
     if len(targets) == 1:
         return _run_single_target(args, targets[0])
     # Checkpoints track one target's crawl + module progress, so like
@@ -384,6 +418,22 @@ def _run_single_target(args: argparse.Namespace, target_url: str) -> int:
     except ValueError as exc:
         print(color(f"error: {exc}", HIGH, colors), file=sys.stderr)
         return 2
+
+    # Login-form auto-auth runs once, before the scan, so the crawl and
+    # every module reuse the session cookie it sets. A failed login
+    # fails the run: silently scanning anonymously would report a
+    # logged-out surface as the whole target.
+    if getattr(args, "login_url", None):
+        from .auth import perform_login
+        login = perform_login(scanner.session, args.login_url,
+                              args.login_user, args.login_pass,
+                              timeout=args.timeout)
+        if not login.success:
+            print(color(f"error: login failed: {login.message}", HIGH, colors),
+                  file=sys.stderr)
+            return 2
+        if not args.quiet and args.format == "text":
+            print(f"  {color('[+]', 'OK', colors)} {login.message}")
 
     # Progress state shared by the phase callback and the per-request tick.
     # Module runs fire hundreds of sequential requests with no phase change;

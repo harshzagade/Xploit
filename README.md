@@ -56,7 +56,8 @@
 
 - **Advanced Scanning Controls**
   - Three scan modes: `passive`, `active`, `full`
-  - Custom headers and cookies for authenticated scanning
+  - Custom headers and cookies for authenticated scanning, plus
+    login-form auto-auth (`--login-url` + `--login-user`/`--login-pass`)
   - Rate limiting to avoid detection
   - Path scoping for targeted assessments
 
@@ -109,6 +110,14 @@ xploit https://target.example \
 xploit https://target.example/dashboard \
   --header "Authorization: Bearer YOUR_TOKEN" \
   --cookie "session=YOUR_SESSION"
+```
+
+Login-form auto-auth (submits the login form once and reuses the
+session cookie for the whole scan):
+```bash
+xploit https://target.example/dashboard \
+  --login-url https://target.example/login \
+  --login-user alice --login-pass s3cret
 ```
 
 ### JSON Output for Automation
@@ -429,6 +438,12 @@ options:
                         'User-Agent: ...' override still wins
   --header NAME: VALUE  add a custom HTTP header (repeatable)
   --cookie NAME=VALUE   add a cookie (repeatable)
+  --login-url URL       submit the login form at URL once before the
+                        scan and reuse the session cookie it sets
+                        (requires --login-user and --login-pass;
+                        single-target scans only)
+  --login-user USER     username for --login-url
+  --login-pass PASS     password for --login-url
   --insecure            disable SSL certificate verification
   --no-color            disable ANSI colors
   --quiet               suppress banner and progress output

@@ -17,6 +17,19 @@
   shape, summary counts, field presence, payload escaping, severity
   classes, empty/unreachable targets, multi-target sections and CLI
   parsing. Version 1.14.0 -> 1.15.0.
+- Login-form auto-auth: `--login-url` + `--login-user`/`--login-pass`
+  submit the login form once before the scan and reuse the session
+  cookie for the whole run (new `xploit/auth.py`: stdlib-only form
+  parsing, so no bs4 dependency — the first form carrying a password
+  input is filled, hidden fields such as CSRF tokens ride along, and
+  the username field is picked by name/id hints with a first-text-field
+  fallback). The run fails fast when the login establishes no session
+  (no new cookie and no redirect away from the login page), so a scan
+  never silently runs anonymously against a logged-out surface; the
+  flags are all-or-nothing and single-target only, like
+  `--checkpoint`. `tests/test_login_auth.py` covers form parsing, live
+  fixture-server login success/failure/no-form/unreachable cases and
+  CLI validation. Version 1.15.0 -> 1.16.0.
 - SARIF output format: `--format sarif` renders a SARIF 2.1.0 document
   (`xploit/reporting.py`: `render_sarif_report` / `render_sarif_reports`)
   that GitHub code scanning and other SARIF consumers can ingest — one
