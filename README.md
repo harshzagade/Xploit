@@ -1,7 +1,7 @@
 # Xploit
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-1.17.0-blue.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Version-1.18.0-blue.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow.svg?style=flat-square">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Detections-25%2B-brightgreen.svg?style=flat-square">
@@ -48,7 +48,7 @@
   - Detailed findings with severity ratings (HIGH/MEDIUM/LOW)
   - CWE classifications for all vulnerabilities
   - Evidence, impact assessment, and remediation guidance
-  - Text, JSON, CSV, SARIF and HTML output formats (CSV: one row per finding — id, severity, url, parameter, evidence — for spreadsheet pipelines; SARIF 2.1.0: one rule per finding id and one result per finding, for GitHub code scanning; HTML: a single self-contained report with severity-coloured findings, evidence, impact and remediation, for sharing with clients)
+  - Text, JSON, CSV, SARIF, HTML and JUnit output formats (CSV: one row per finding — id, severity, url, parameter, evidence — for spreadsheet pipelines; SARIF 2.1.0: one rule per finding id and one result per finding, for GitHub code scanning; HTML: a single self-contained report with severity-coloured findings, evidence, impact and remediation, for sharing with clients; JUnit: one testsuite per target and one testcase per finding, HIGH findings as test failures so CI fails builds on them)
   - `--output PATH` saves the report to a file (ANSI colors stripped)
 
 - **Evidence-Gated Findings**
@@ -66,6 +66,7 @@
 
 - **CI/CD Integration**
   - JSON output for pipeline integration
+  - JUnit XML output (`--format junit`) so CI fails builds on HIGH findings with native test reporting
   - Quiet mode for scripting
   - Exit code is 1 when any HIGH finding is reported, 0 otherwise
 
@@ -418,7 +419,7 @@ options:
                         for faster targeted scans (e.g. --modules xss,sqli);
                         may be repeated. Valid modules: general, exposure,
                         data, sqli, xss, cmd, logic, auth, advanced, brute
-  --format {text,json,csv,sarif,html}
+  --format {text,json,csv,sarif,html,junit}
                         output format
   --output PATH         write the report to a file (ANSI colors stripped)
   --retest              re-fire each finding's proof request to confirm it

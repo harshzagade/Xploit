@@ -6,6 +6,7 @@ import io
 import json
 import re
 import textwrap
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from . import __version__
@@ -504,6 +505,92 @@ def render_html_reports(results: list[ScanResult]) -> str:
 
 def render_html_report(result: ScanResult) -> str:
     return render_html_reports([result])
+
+
+# JUnit XML output for `--format junit`: CI pipelines ingest findings as
+# native test results, so a build fails on HIGH findings with no extra
+# tooling. One testsuite per scan result; one testcase per finding
+# (classname `xploit.<finding-id>`, name `<id> <name>`). Only HIGH
+# findings become `<failure>` elements — MEDIUM/LOW/INFO findings are
+# listed as passing testcases so the run stays visible without breaking
+# the build; teams wanting stricter gating can post-process the XML.
+# An unreachable target is a single `<error>` testcase instead of a
+# silent zero-test pass, so a dead target fails the build too. ElementTree
+# escapes all finding text, so reflected payloads in evidence can never
+# break the document.
+def _junit_testcase(finding: Finding) -> ET.Element:
+    case = ET.Element("testcase", {
+        "classname": f"xploit.{finding.id}",
+        "name": f"{finding.id} {finding.name}",
+    })
+    if finding.severity != "HIGH":
+        return case
+    detail = "\n".join(filter(None, [
+        f"URL: {finding.url}",
+        f"Parameter: {finding.parameter}" if finding.parameter else "",
+        f"Method: {finding.method}" if finding.method != "GET" else "",
+        f"Evidence: {finding.evidence}",
+        f"CWE: {finding.cwe}" if finding.cwe else "",
+        f"Impact: {finding.impact}" if finding.impact else "",
+        f"Remediation: {finding.remediation}" if finding.remediation else "",
+    ]))
+    failure = ET.SubElement(case, "failure", {
+        "message": f"{finding.id} ({finding.severity}) at {finding.url}",
+        "type": finding.severity,
+    })
+    failure.text = detail
+    return case
+
+
+def _junit_suite(result: ScanResult) -> ET.Element:
+    failures = sum(1 for f in result.findings if f.severity == "HIGH")
+    unreachable = result.status == "unreachable"
+    suite = ET.Element("testsuite", {
+        "name": f"xploit:{result.normalized_target}",
+        "tests": str(1 if unreachable else len(result.findings)),
+        "failures": str(0 if unreachable else failures),
+        "errors": "1" if unreachable else "0",
+        "skipped": "0",
+        "time": f"{result.duration_seconds:g}",
+    })
+    props = ET.SubElement(suite, "properties")
+    for key, value in (("target", result.normalized_target),
+                       ("scanMode", result.scan_mode),
+                       ("startedAt", result.started_at)):
+        ET.SubElement(props, "property", {"name": key, "value": value})
+    if unreachable:
+        case = ET.SubElement(suite, "testcase", {
+            "classname": "xploit.target",
+            "name": "target-unreachable",
+        })
+        error = ET.SubElement(case, "error", {
+            "message": f"target unreachable: {result.normalized_target}",
+            "type": "unreachable",
+        })
+        error.text = "; ".join(result.errors) or "target unreachable"
+    else:
+        for finding in result.findings:
+            suite.append(_junit_testcase(finding))
+    return suite
+
+
+def render_junit_reports(results: list[ScanResult]) -> str:
+    """Render one or more scan results as a JUnit XML document.
+
+    Multi-target runs produce one testsuite per target inside a single
+    `<testsuites>` root, like the SARIF format's one run per target.
+    """
+    root = ET.Element("testsuites")
+    for result in results:
+        root.append(_junit_suite(result))
+    ET.indent(root, space="  ")
+    # xml_declaration needs a byte encoding; decode back to str.
+    return ET.tostring(root, encoding="utf-8",
+                       xml_declaration=True).decode("utf-8")
+
+
+def render_junit_report(result: ScanResult) -> str:
+    return render_junit_reports([result])
 
 
 def write_report(content: str, output_path: str) -> None:

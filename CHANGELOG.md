@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Added
+- JUnit XML output format: `--format junit` renders findings as native
+  CI test results (`xploit/reporting.py`: `render_junit_report` /
+  `render_junit_reports`, stdlib ElementTree) — one testsuite per scan
+  result, one testcase per finding (`xploit.<finding-id>`), HIGH
+  findings as `<failure>` elements with URL/parameter/evidence/CWE/
+  impact/remediation, MEDIUM/LOW/INFO listed as passing testcases so
+  the run stays visible without breaking the build; an unreachable
+  target is a single `<error>` testcase instead of a silent zero-test
+  pass. Multi-target runs produce one testsuite per target in a single
+  `<testsuites>` document. `tests/test_junit_format.py` covers the
+  document shape, the HIGH-only failure mapping, field presence,
+  payload escaping, empty/unreachable targets, multi-target suites and
+  the CLI end-to-end. Version 1.17.0 -> 1.18.0.
 - `--respect-robots`: honor the target's robots.txt Disallow rules while
   crawling (`WebScanner(respect_robots=True)`; stdlib `RobotFileParser`
   against the `*` group, fetched once per scan). Disallowed entry points,
