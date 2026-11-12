@@ -91,6 +91,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                         help="skip crawling URLs matching PATTERN (Python regex, matched against "
                              "the full URL); may be repeated")
+    parser.add_argument("--respect-robots", action="store_true",
+                        help="honor robots.txt Disallow rules while crawling "
+                             "(off by default: a scanner's job is to probe "
+                             "what robots.txt hides, so opt in for "
+                             "policy-compliant scans)")
     parser.add_argument("--modules", action="append", default=[], metavar="LIST",
                         help="run only the named scan modules, comma-separated, "
                              "for faster targeted scans (e.g. --modules xss,sqli); "
@@ -200,6 +205,8 @@ def _build_scanner(args: argparse.Namespace, target_url: str) -> WebScanner:
         resume=getattr(args, "resume", None),
         # getattr: Namespaces built by hand may predate the --dry-run flag.
         dry_run=getattr(args, "dry_run", False),
+        # getattr: same for --respect-robots.
+        respect_robots=getattr(args, "respect_robots", False),
         verify=not args.insecure,
     )
     apply_request_overrides(scanner, args.header, args.cookie)

@@ -3,6 +3,22 @@
 ## Unreleased
 
 ### Added
+- `--respect-robots`: honor the target's robots.txt Disallow rules while
+  crawling (`WebScanner(respect_robots=True)`; stdlib `RobotFileParser`
+  against the `*` group, fetched once per scan). Disallowed entry points,
+  links and OpenAPI-derived JSON targets are never requested — the crawl
+  skips them instead of fetching and dropping them — and the distinct
+  skipped count is reported as `robots_skipped` on `ScanResult`, in JSON
+  output, and in the text report's coverage line. Off by default: a
+  scanner's job is to probe what robots.txt hides, so honoring it is
+  opt-in for policy-compliant scans. Fail-open: a missing or unfetchable
+  robots.txt disallows nothing. Known limit, documented in the code:
+  CPython's parser applies the first matching rule in file order, not
+  the longest match, so an Allow listed after a broader Disallow does
+  not override it. `tests/test_respect_robots.py` covers the parser
+  surface, the disallow check, live fixture-server crawls (flag on/off,
+  missing robots.txt), the dry-run result field and the CLI end-to-end.
+  Version 1.16.0 -> 1.17.0.
 - HTML report format: `--format html` renders a single self-contained
   HTML document (`xploit/reporting.py`: `render_html_report` /
   `render_html_reports`) — inline CSS, no external resources — for

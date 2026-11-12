@@ -1,7 +1,7 @@
 # Xploit
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-1.10.0-blue.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Version-1.17.0-blue.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow.svg?style=flat-square">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Detections-25%2B-brightgreen.svg?style=flat-square">
@@ -40,6 +40,9 @@
     (`$ref` and `allOf` schemas resolve; POST/PUT/PATCH only)
   - Form extraction and parameter analysis
   - Up to 500 pages per scan
+  - Policy-compliant crawling: `--respect-robots` honors robots.txt
+    Disallow rules (off by default — the scanner's job is to probe
+    what robots.txt hides, so opt in for policy-compliant scans)
 
 - **Professional Reporting**
   - Detailed findings with severity ratings (HIGH/MEDIUM/LOW)
@@ -409,6 +412,8 @@ options:
                         fragile targets.
   --exclude PATTERN     skip crawling URLs matching PATTERN (Python regex,
                         matched against the full URL); may be repeated
+  --respect-robots      honor robots.txt Disallow rules while crawling
+                        (off by default)
   --modules LIST        run only the named scan modules, comma-separated,
                         for faster targeted scans (e.g. --modules xss,sqli);
                         may be repeated. Valid modules: general, exposure,

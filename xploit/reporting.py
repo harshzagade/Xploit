@@ -97,6 +97,8 @@ def render_text_report(result: ScanResult, colors: bool = True,
     target   = result.normalized_target
     meta     = f"{result.scan_mode.upper()}  ·  {result.duration_seconds}s  ·  {result.started_at}"
     coverage = f"{len(result.pages_seen)} pages  ·  {result.forms_seen} forms discovered"
+    if getattr(result, "robots_skipped", 0):
+        coverage += f"  ·  {result.robots_skipped} robots.txt-skipped"
     verified = sum(1 for f in result.findings if f.verified)
     total_f  = len(result.findings)
     proof_line = f"✓ {verified}/{total_f} findings verified with replayable proof" if total_f else None

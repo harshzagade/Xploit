@@ -52,6 +52,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Iterable, Callable, Set
 from time import sleep
 from urllib.parse import parse_qsl, urldefrag, urlencode, urljoin, urlparse, urlunparse
+from urllib.robotparser import RobotFileParser
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -250,6 +251,9 @@ class ScanResult:
     # consumers can tell "not a dry-run" apart from "dry-run found
     # nothing" via the result status, not this field.
     entry_points: list[dict] = field(default_factory=list)
+    # --respect-robots: distinct disallowed URLs the crawl considered
+    # and skipped. 0 when the flag is off (nothing was ever checked).
+    robots_skipped: int = 0
 
     def to_dict(self) -> dict:
         """Serialize the result for JSON reports, including the computed
@@ -278,6 +282,7 @@ class ScanResult:
             "target_profile": self.target_profile,
             "retest_summary": self.retest_summary,
             "entry_points": list(self.entry_points),
+            "robots_skipped": self.robots_skipped,
         }
 
 # Registry of scan modules selectable via --modules / WebScanner(modules=...).
@@ -626,6 +631,12 @@ class WebScanner:
       resumable scan progress), and ``_build_target_profile`` /
       ``_build_param_hints`` are skipped because the latter sends
       probe requests.
+    - ``respect_robots``: ``--respect-robots`` honors the target's
+      robots.txt Disallow rules while crawling (off by default — a
+      scanner's job is to probe what robots.txt hides, so honoring it
+      is opt-in). Rules are parsed with stdlib ``RobotFileParser``
+      against the ``*`` group; a missing or unfetchable robots.txt
+      means nothing is disallowed (fail-open).
 
     Safety baked into the request layer: retries are idempotent-only
     (GET/HEAD/OPTIONS, never POST), redirects are followed manually with a
@@ -661,6 +672,7 @@ class WebScanner:
         checkpoint: str | None = None,
         resume: str | None = None,
         dry_run: bool = False,
+        respect_robots: bool = False,
     ) -> None:
         self.target = target
         self.root = normalize_url(target)
@@ -766,6 +778,16 @@ class WebScanner:
         self.checkpoint_file = checkpoint
         self.resume_file = resume
         self.dry_run = dry_run
+        # --respect-robots state: the parsed robots.txt rules (None until
+        # loaded, and None forever when the flag is off or the file is
+        # missing/unfetchable — fail-open), the raw body (seed source for
+        # _discover_entry_points), and the distinct disallowed URLs the
+        # crawl considered and skipped (surfaced as robots_skipped).
+        self.respect_robots = respect_robots
+        self._robots_parser: RobotFileParser | None = None
+        self._robots_text: str = ""
+        self._robots_loaded: bool = False
+        self._robots_skipped: set[str] = set()
         self._checkpoint_path = checkpoint or resume
         self._resumed_completed: set[str] = set()
         self._resumed_crawled: list[str] = []
@@ -994,6 +1016,7 @@ class WebScanner:
                 exclude_patterns=list(self.exclude),
                 modules=list(self.modules or []),
                 entry_points=self._dry_run_entry_points(),
+                robots_skipped=len(self._robots_skipped),
             )
         self._write_checkpoint(finished=False)
         self._build_target_profile()
@@ -1086,6 +1109,7 @@ class WebScanner:
             exclude_patterns=list(self.exclude),
             modules=list(self.modules or []),
             target_profile=self.target_profile,
+            robots_skipped=len(self._robots_skipped),
         )
 
     # Bound for manual redirect following. requests' own default is 30, which
@@ -1576,6 +1600,10 @@ class WebScanner:
 
     def _crawl(self) -> None:
         """Parallelized crawler with path normalization."""
+        # --respect-robots: load the rules before choosing entry points
+        # so both the fresh-discovery and the --resume branches filter
+        # through them. A no-op when the flag is off (no extra request).
+        self._load_robots_rules()
         if self._resumed_crawled:
             # --resume: seed from the checkpoint's known pages instead of
             # re-running robots.txt/sitemap discovery. The pages are still
@@ -1583,7 +1611,8 @@ class WebScanner:
             # response objects, and link expansion from them continues
             # the crawl past where the killed scan stopped.
             entry_points = [url for url in self._resumed_crawled
-                            if self._in_scope(url) and not self._excluded(url)]
+                            if self._in_scope(url) and not self._excluded(url)
+                            and not self._robots_disallowed(url)]
         else:
             entry_points = self._discover_entry_points()
         seen = set(entry_points)
@@ -1659,7 +1688,8 @@ class WebScanner:
                                     continue
                                 norm = normalize_path(link)
                                 if (link not in seen and norm not in self._normalized_seen
-                                        and self._in_scope(link) and not self._excluded(link)):
+                                        and self._in_scope(link) and not self._excluded(link)
+                                        and not self._robots_disallowed(link)):
                                     seen.add(link)
                                     self._normalized_seen.add(norm)
                                     futures[executor.submit(self._request, "GET", link)] = (link, depth + 1)
@@ -1743,16 +1773,24 @@ class WebScanner:
         # unreachable.
         if self.scope_prefix and self.scope_prefix != "/":
             entry_points.add(urljoin(self.root, self.scope_prefix))
-        robots = self._request("GET", urljoin(self.root, "/robots.txt"), quiet=True)
-        if robots and robots.status_code < 400:
-            for candidate in self._urls_from_text(robots.text):
-                # Relative paths (no scheme) — resolve against root before adding
-                if not candidate.startswith(("http://", "https://")):
-                    try:
-                        candidate = urljoin(self.root, candidate)
-                    except ValueError:
-                        continue
-                entry_points.add(candidate)
+        # robots.txt: with --respect-robots the body comes from the
+        # already-loaded rules (fetched once in _crawl); without the flag
+        # the old direct fetch keeps seeding Allow/Sitemap URLs exactly
+        # as before — the flag changes filtering, never seed discovery.
+        if self.respect_robots:
+            robots_text = self._load_robots_rules()
+        else:
+            robots = self._request("GET", urljoin(self.root, "/robots.txt"), quiet=True)
+            robots_text = (robots.text if robots and robots.status_code < 400
+                           else "")
+        for candidate in self._urls_from_text(robots_text):
+            # Relative paths (no scheme) — resolve against root before adding
+            if not candidate.startswith(("http://", "https://")):
+                try:
+                    candidate = urljoin(self.root, candidate)
+                except ValueError:
+                    continue
+            entry_points.add(candidate)
         sitemap_urls = [urljoin(self.root, "/sitemap.xml"), urljoin(self.root, "/sitemap_index.xml")]
         for sitemap_url in sitemap_urls:
             entry_points.update(self._collect_sitemap_urls(sitemap_url))
@@ -1797,9 +1835,11 @@ class WebScanner:
         self.json_targets = [
             target for target in json_targets.values()
             if self._in_scope(target.url) and not self._excluded(target.url)
+            and not self._robots_disallowed(target.url)
         ]
         return [url for url in entry_points
-                if self._in_scope(url) and not self._excluded(url)]
+                if self._in_scope(url) and not self._excluded(url)
+                and not self._robots_disallowed(url)]
 
     def _collect_sitemap_urls(self, sitemap_url: str, depth: int = 0,
                               seen: set | None = None) -> set[str]:
@@ -1921,6 +1961,46 @@ class WebScanner:
             forms.append(FormTarget(page_url, action, method, inputs, types))
         return forms
 
+    def _load_robots_rules(self) -> str:
+        """Fetch /robots.txt once and parse its Disallow rules (flag only).
+
+        Returns the raw robots.txt body ("" when the flag is off, the
+        fetch fails, or the site serves none) so _discover_entry_points
+        can seed from it. Parsing is stdlib RobotFileParser against the
+        "*" group: a scanner's Chrome UA matches no named group, so the
+        catch-all rules are the honest ones to honor. Known limit,
+        documented not hidden: CPython's parser applies the FIRST
+        matching rule in file order, not the longest match — an Allow
+        listed after a broader Disallow for the same path does not
+        override it (put the Allow first, or use a narrower Disallow).
+        """
+        if self._robots_loaded:
+            return self._robots_text
+        self._robots_loaded = True
+        if not self.respect_robots:
+            return ""
+        res = self._request("GET", urljoin(self.root, "/robots.txt"), quiet=True)
+        if res and res.status_code < 400:
+            self._robots_text = res.text
+            parser = RobotFileParser()
+            parser.parse(res.text.splitlines())
+            self._robots_parser = parser
+        return self._robots_text
+
+    def _robots_disallowed(self, url: str) -> bool:
+        """True when --respect-robots is on and robots.txt disallows `url`.
+
+        Fail-open by design: the flag off, no robots.txt, or a fetch
+        failure all mean "allowed". Disallowed URLs are recorded
+        (deduped) so the report can say how many paths the flag skipped.
+        """
+        if not self.respect_robots or self._robots_parser is None:
+            return False
+        if self._robots_parser.can_fetch("*", url):
+            return False
+        self._robots_skipped.add(url)
+        return True
+
     def _in_scope(self, url: str) -> bool:
         if not same_origin(url, self.root):
             return False
@@ -2019,4 +2099,5 @@ class WebScanner:
             exclude_patterns=list(self.exclude),
             modules=list(self.modules or []),
             target_profile=self.target_profile,
+            robots_skipped=len(self._robots_skipped),
         )
