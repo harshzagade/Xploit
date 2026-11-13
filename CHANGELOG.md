@@ -34,7 +34,7 @@
   the per-target paths handed to the scanner, missing-resume fresh
   scans, finished-checkpoint restore without scanning, corrupt
   checkpoints, and live two-server end-to-end write + resume.
-  Version 1.18.0 -> 1.19.0.
+  Version 1.20.0 -> 1.21.0.
 - JUnit XML output format: `--format junit` renders findings as native
   CI test results (`xploit/reporting.py`: `render_junit_report` /
   `render_junit_reports`, stdlib ElementTree) — one testsuite per scan

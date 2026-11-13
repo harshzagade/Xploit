@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import os
 import sys
 import threading
 import time
@@ -110,11 +111,15 @@ def build_parser() -> argparse.ArgumentParser:
                              "(no scan modules run; for scoping a scan "
                              "before the active phase)")
     parser.add_argument("--checkpoint", metavar="FILE", default=None,
-                        help="write resume checkpoints during the scan (single-target runs); "
-                             "progress is saved after the crawl and after each module")
+                        help="write resume checkpoints during the scan; "
+                             "multi-target runs write one file per target "
+                             "(<FILE>.<target-slug>.json); progress is saved "
+                             "after the crawl and after each module")
     parser.add_argument("--resume", metavar="FILE", default=None,
-                        help="resume an interrupted scan from a checkpoint file (single-target); "
-                             "completed modules are skipped, their findings restored, and progress "
+                        help="resume an interrupted scan from a checkpoint file; "
+                             "multi-target runs read one file per target "
+                             "(<FILE>.<target-slug>.json); completed modules "
+                             "are skipped, their findings restored, and progress "
                              "is written back to this file unless --checkpoint is also given")
     parser.add_argument("--proxy", default=None, metavar="URL",
                         help="route all scan traffic through an HTTP/HTTPS "
@@ -298,13 +303,6 @@ def run_scan(args: argparse.Namespace) -> int:
         return 2
     if len(targets) == 1:
         return _run_single_target(args, targets[0])
-    # Checkpoints track one target's crawl + module progress, so like
-    # DurbX they are single-target only — a shared file across targets
-    # would mix unrelated scans.
-    if getattr(args, "checkpoint", None) or getattr(args, "resume", None):
-        print(color("error: --checkpoint/--resume support single-target "
-                    "scans only", HIGH, not args.no_color), file=sys.stderr)
-        return 2
     return _run_multi_target(args, targets)
 
 
@@ -334,8 +332,71 @@ def _run_multi_target(args: argparse.Namespace, targets: list[str]) -> int:
         if show_ui:
             with _lock:
                 print(f"  {color('[+]', 'OK', colors)} {_short(target)} — starting")
+        # Per-target checkpoint files (see xploit.checkpoint): in a
+        # multi-target run --checkpoint/--resume name a base path and each
+        # target gets its own <base>.<target-slug>.json file, so scans
+        # never mix. A missing per-target resume file means this target
+        # has no interrupted scan — scan it fresh. A finished per-target
+        # checkpoint means the target already completed: report its
+        # findings without re-scanning (a --retest pass needs a live
+        # scanner, so restored results skip it).
+        target_args = args
+        checkpoint_path = getattr(args, "checkpoint", None)
+        resume_path = getattr(args, "resume", None)
+        if checkpoint_path or resume_path:
+            from .checkpoint import (
+                checkpoint_path_for_target,
+                deserialize_findings,
+                load_checkpoint,
+            )
+            if checkpoint_path:
+                checkpoint_path = checkpoint_path_for_target(
+                    checkpoint_path, target)
+            if resume_path:
+                resume_path = checkpoint_path_for_target(resume_path, target)
+                if not os.path.exists(resume_path):
+                    if show_ui:
+                        with _lock:
+                            print(f"  {color('[+]', 'OK', colors)} "
+                                  f"{_short(target)} — no checkpoint, fresh scan")
+                    resume_path = None
+                else:
+                    try:
+                        payload = load_checkpoint(resume_path)
+                    except (ValueError, OSError) as exc:
+                        with _lock:
+                            # stderr, not stdout: keeps piped --format json
+                            # output parseable.
+                            print(color(f"  [!] {_short(target)}: bad "
+                                        f"checkpoint: {exc}", HIGH, colors),
+                                  file=sys.stderr)
+                        return _error_result(target, "error")
+                    if payload["finished"]:
+                        restored = ScanResult(
+                            target=target,
+                            normalized_target=payload["target"],
+                            started_at="", duration_seconds=0.0,
+                            status="completed", scan_mode=args.mode,
+                            scope_prefix=args.scope_prefix,
+                            completion_percent=100,
+                            checks_run=list(payload["completed_modules"]),
+                            pages_seen=list(payload["crawled"]),
+                            forms_seen=len(payload["forms"]),
+                            findings=deserialize_findings(payload["findings"]),
+                            errors=[],
+                        )
+                        if show_ui:
+                            with _lock:
+                                print(f"  {color('[ok]', 'OK', colors)} "
+                                      f"{_short(target)} — done: "
+                                      f"{len(restored.findings)} findings "
+                                      f"(restored from finished checkpoint)")
+                        return restored
+            target_args = argparse.Namespace(**vars(args))
+            target_args.checkpoint = checkpoint_path
+            target_args.resume = resume_path
         try:
-            scanner = _build_scanner(args, target)
+            scanner = _build_scanner(target_args, target)
         except ValueError as exc:
             with _lock:
                 print(color(f"  [!] {_short(target)}: error: {exc}", HIGH, colors))

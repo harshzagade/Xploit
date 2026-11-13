@@ -27,14 +27,22 @@ not persisted (bodies can be megabytes and modules read live response
 objects), so a resumed scan re-fetches crawled pages to rebuild the
 in-memory page table. What resume saves is the discovery phase, all
 completed modules' probe traffic, and every finding already recorded.
+
+Multi-target runs use one checkpoint file per target
+(:func:`checkpoint_path_for_target`): ``--checkpoint scan.json`` over
+two targets writes ``scan.<target-slug>.json`` for each, so scans never
+mix. Single-target runs keep using the given path unchanged, so
+checkpoints written by older versions still resume.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, fields
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     from .scanner import Finding, FormTarget
@@ -49,6 +57,46 @@ _REQUIRED_KEYS = (
     "findings",
     "finished",
 )
+
+
+def target_slug(target: str) -> str:
+    """Filesystem-safe slug for a target URL: host + port + path.
+
+    Two targets slug identically only when their host, non-default port
+    and path all match — i.e. they are the same scan root. Query strings
+    are ignored (targets are scan roots); a slug collision therefore
+    cannot silently mix scans, because the checkpoint's stored target
+    still has to match on ``--resume``.
+    """
+    parsed = urlparse(target)
+    try:
+        host = (parsed.hostname or parsed.netloc or "target").lower()
+        port = parsed.port
+    except ValueError:
+        # Unparseable port (e.g. http://x:bad/) — fall back to the raw
+        # netloc so the slug stays distinct instead of crashing.
+        host = (parsed.netloc or "target").lower()
+        port = None
+    if port and port not in (80, 443):
+        host = f"{host}-{port}"
+    path = parsed.path.strip("/").replace("/", "-")
+    slug = host + (f"-{path}" if path else "")
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", slug).lower().strip("-") or "target"
+
+
+def checkpoint_path_for_target(base: str, target: str) -> str:
+    """Per-target checkpoint path: ``<base>.<target-slug>.json``.
+
+    ``scan.json`` + ``https://example.com/app`` ->
+    ``scan.example.com-app.json``; a base without a ``.json`` suffix
+    gains one (``cp`` -> ``cp.example.com.json``). Directory parts of
+    the base path are preserved.
+    """
+    slug = target_slug(target)
+    path = Path(base)
+    if path.suffix == ".json":
+        return str(path.with_name(f"{path.stem}.{slug}.json"))
+    return f"{base}.{slug}.json"
 
 
 def write_checkpoint(
