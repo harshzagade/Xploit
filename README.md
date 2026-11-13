@@ -1,7 +1,7 @@
 # Xploit
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-1.18.0-blue.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Version-1.20.0-blue.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow.svg?style=flat-square">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Detections-25%2B-brightgreen.svg?style=flat-square">
@@ -50,6 +50,11 @@
   - Evidence, impact assessment, and remediation guidance
   - Text, JSON, CSV, SARIF, HTML and JUnit output formats (CSV: one row per finding — id, severity, url, parameter, evidence — for spreadsheet pipelines; SARIF 2.1.0: one rule per finding id and one result per finding, for GitHub code scanning; HTML: a single self-contained report with severity-coloured findings, evidence, impact and remediation, for sharing with clients; JUnit: one testsuite per target and one testcase per finding, HIGH findings as test failures so CI fails builds on them)
   - `--output PATH` saves the report to a file (ANSI colors stripped)
+  - Target fingerprint in every report: stack/DBMS hints plus a WAF
+    note (Cloudflare, Akamai, ModSecurity, Sucuri, Imperva, F5 BIG-IP)
+    detected from response headers, cookies and block pages, so
+    analysts know when findings may have been filtered — shown in the
+    text report's coverage line and as `waf`/`waf_signals` in JSON
 
 - **Evidence-Gated Findings**
   - Every finding passes a provenance gate: `verified` only with replayable proof
@@ -201,17 +206,22 @@ is recorded in the text summary ("Modules selected") and JSON report.
 xploit https://target.example --checkpoint scan.json
 xploit https://target.example --resume scan.json
 ```
-`--checkpoint FILE` saves progress after the crawl and after each module
-(single-target runs only). If the scan is killed, `--resume FILE` picks it
-up: completed modules are skipped, their findings are restored into the
-final report, and the crawl seeds from the checkpoint's known pages
-instead of re-running robots.txt/sitemap discovery. A checkpoint whose
-target differs from the scan URL, or one already marked finished, fails
-fast. Progress is written back to the `--resume` file unless `--checkpoint`
-is also given. One honest limit: page responses are not persisted, so a
-resumed scan re-fetches crawled pages to rebuild the in-memory page
-table — what resume saves is the discovery phase, completed modules'
-probe traffic, and every finding already recorded.
+`--checkpoint FILE` saves progress after the crawl and after each module.
+If the scan is killed, `--resume FILE` picks it up: completed modules
+are skipped, their findings are restored into the final report, and the
+crawl seeds from the checkpoint's known pages instead of re-running
+robots.txt/sitemap discovery. A checkpoint whose target differs from the
+scan URL, or one already marked finished, fails fast. Progress is written
+back to the `--resume` file unless `--checkpoint` is also given. Multi-target
+runs write one checkpoint file per target — `<FILE>.<target-slug>.json`
+(e.g. `scan.json` over `https://example.com/app` writes
+`scan.example.com-app.json`) — so scans never mix; `--resume` reads the
+matching per-target file, scans a target fresh when its file is missing,
+and reports a target's finished checkpoint without re-scanning it. One
+honest limit: page responses are not persisted, so a resumed scan
+re-fetches crawled pages to rebuild the in-memory page table — what
+resume saves is the discovery phase, completed modules' probe traffic,
+and every finding already recorded.
 
 ### Dry-Run: List Entry Points Before Probing
 ```bash
@@ -429,12 +439,14 @@ options:
                         parameters without sending any probe traffic
                         (no scan modules run)
   --checkpoint FILE     write resume checkpoints during the scan
-                        (single-target runs); progress is saved after the
-                        crawl and after each module
+                        (multi-target runs write one file per target:
+                        <FILE>.<target-slug>.json); progress is saved
+                        after the crawl and after each module
   --resume FILE         resume an interrupted scan from a checkpoint file
-                        (single-target); completed modules are skipped,
-                        their findings restored, and progress is written
-                        back to this file unless --checkpoint is also given
+                        (multi-target runs read one file per target);
+                        completed modules are skipped, their findings
+                        restored, and progress is written back to this
+                        file unless --checkpoint is also given
   --proxy URL           route all scan traffic through an HTTP/HTTPS proxy
                         (e.g. http://127.0.0.1:8080 for a Burp-style local
                         intercept); a bare host:port is treated as

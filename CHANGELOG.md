@@ -3,6 +3,38 @@
 ## Unreleased
 
 ### Added
+- WAF fingerprint note: `_build_target_profile` now detects common
+  WAF/protection markers (Cloudflare, Akamai, ModSecurity, Sucuri,
+  Imperva, F5 BIG-IP) from response headers (`cf-ray`, `x-akamai-*`,
+  `x-sucuri-*`, `x-iinfo`, `Server` values), protection cookies
+  (`__cfduid`, `cf_clearance`, `incap_ses_*`) and vendor-distinctive
+  block-page text (`xploit/scanner.py`: `detect_waf`, module-level
+  marker tables). Block-page markers are only checked on error
+  responses (status >= 400), so a 200 page merely discussing a WAF
+  cannot false-positive. Detected vendors land in `target_profile`
+  as `waf`/`waf_signals` (JSON) and in the text report's coverage line
+  (`WAF: Cloudflare`). `tests/test_waf_fingerprint.py` covers each
+  vendor via headers/cookies/block pages, the 200-page guard, profile
+  integration and dedupe, and a live fixture-server end-to-end.
+  Version 1.19.0 -> 1.20.0.
+- Multi-target checkpoint files: `--checkpoint`/`--resume` no longer
+  require a single target (`xploit/checkpoint.py`: `target_slug` /
+  `checkpoint_path_for_target`, `xploit/cli.py`: per-target derivation
+  in `_run_multi_target`). A multi-target run writes one checkpoint
+  per target (`scan.json` -> `scan.<target-slug>.json`, slug from
+  host + non-default port + path); `--resume` reads the matching
+  per-target file, scans a target fresh when its file is missing, and
+  reports a finished checkpoint's findings without re-scanning it
+  (`--retest` is skipped for restored results — it needs a live
+  scanner). A corrupt per-target checkpoint is an `error` result for
+  that target only, and the message goes to stderr so piped
+  `--format json` stays parseable. Single-target runs keep using the
+  given path unchanged, so old checkpoints still resume.
+  `tests/test_multitarget_checkpoint.py` covers slug/path derivation,
+  the per-target paths handed to the scanner, missing-resume fresh
+  scans, finished-checkpoint restore without scanning, corrupt
+  checkpoints, and live two-server end-to-end write + resume.
+  Version 1.18.0 -> 1.19.0.
 - JUnit XML output format: `--format junit` renders findings as native
   CI test results (`xploit/reporting.py`: `render_junit_report` /
   `render_junit_reports`, stdlib ElementTree) — one testsuite per scan
