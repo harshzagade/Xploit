@@ -78,7 +78,7 @@ class SensitiveDataModule(BaseModule):
 
     def _check_response(self, url, response):
         """Check response for sensitive data"""
-        if not response or not hasattr(response, 'text'):
+        if response is None or not hasattr(response, 'text'):
             return
 
         text = response.text

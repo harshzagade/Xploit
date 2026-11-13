@@ -159,7 +159,7 @@ class MultiVectorInjectionModule(BaseModule):
 
         for payload in payloads:
             res = self._send(url, param, method, payload, base_data)
-            if not res:
+            if res is None:
                 continue
             matched = self._ldap_error_markers(res.text, baseline_text)
             if not matched:
@@ -236,7 +236,7 @@ class MultiVectorInjectionModule(BaseModule):
         true_lens = []
         for true_payload in BLIND_LDAP_TRUE_PAYLOADS:
             res = self._send(url, param, method, true_payload, base_data)
-            if not res:
+            if res is None:
                 return
             if self._ldap_error_markers(res.text, baseline_text):
                 return
@@ -297,7 +297,7 @@ class MultiVectorInjectionModule(BaseModule):
 
         for payload in payloads:
             res = self._send(url, param, method, payload, base_data)
-            if not res:
+            if res is None:
                 continue
 
             # XXE file read success — require the marker to be NEW relative to the
@@ -373,7 +373,7 @@ class MultiVectorInjectionModule(BaseModule):
 
         for payload in payloads:
             res = self._send(url, param, method, payload, base_data)
-            if not res:
+            if res is None:
                 continue
             res_lower = res.text.lower()
             matched = [e for e in nosql_errors
@@ -425,7 +425,7 @@ class MultiVectorInjectionModule(BaseModule):
                 continue
 
             res = self._send(url, param, method, payload, base_data)
-            if not res:
+            if res is None:
                 continue
 
             # Primary hit: expected value present AND payload not literally reflected.

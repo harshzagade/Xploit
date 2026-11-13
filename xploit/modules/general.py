@@ -40,7 +40,7 @@ class GeneralModule(BaseModule):
 
     def _check_headers(self):
         res = self.scanner.pages.get(self.scanner.root)
-        if not res: return
+        if res is None: return
         headers = {k.lower(): v for k, v in res.headers.items()}
         checks = {
             "content-security-policy": ("Missing Content-Security-Policy", MEDIUM, "CWE-693", "HDR-CSP"),
@@ -229,7 +229,7 @@ class GeneralModule(BaseModule):
 
     def _check_clickjacking(self):
         res = self.scanner.pages.get(self.scanner.root)
-        if not res: return
+        if res is None: return
         if "x-frame-options" not in res.headers and "frame-ancestors" not in res.headers.get("content-security-policy", "").lower():
             self.add_finding(Finding(
                 id="CLK-001", name="Clickjacking Exposure",
@@ -316,7 +316,7 @@ class GeneralModule(BaseModule):
     def _check_cors_url(self, url):
         origin = self._cors_origin
         res = self.scanner._request("GET", url, headers={"Origin": origin})
-        if not res:
+        if res is None:
             return
         acao = res.headers.get("Access-Control-Allow-Origin")
         if not acao:

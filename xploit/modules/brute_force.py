@@ -267,7 +267,7 @@ class BruteForceModule(BaseModule):
 
     def _is_successful_login(self, response, baseline):
         """Determine if a login attempt was successful"""
-        if not response:
+        if response is None:
             return False
 
         response_text = response.text.lower()

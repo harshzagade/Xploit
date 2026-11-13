@@ -51,7 +51,7 @@ class AdvancedAuthModule(BaseModule):
                     data=data if form.method == "POST" else None,
                     params=data if form.method == "GET" else None,
                 )
-                if res:
+                if res is not None:
                     responses.append((username, len(res.text), res.text.lower()))
 
             if len(responses) != 2:
@@ -105,7 +105,7 @@ class AdvancedAuthModule(BaseModule):
 
     def _check_session_management(self):
         for url, response in self.scanner.pages.items():
-            if not response:
+            if response is None:
                 continue
 
             # Session token exposed in URL query string — tokenized whole-token

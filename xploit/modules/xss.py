@@ -102,7 +102,7 @@ class XSSModule(BaseModule):
                 continue
             target_url = mutate_query(url, param, payload)
             res = self.scanner._request("GET", target_url)
-            if res:
+            if res is not None:
                 if self._analyze_reflection(res, base, param, payload, "GET",
                                              proof_url=target_url):
                     # Reflected: probe whether the payload was stored.
@@ -134,7 +134,7 @@ class XSSModule(BaseModule):
             body[param] = payload
             proof_data = json.dumps(body)
             res = self.scanner._request(target.method, target.url, json=body)
-            if not res:
+            if res is None:
                 continue
             if self._analyze_reflection(res, base, param, payload, target.method,
                                         proof_url=target.url, proof_data=proof_data):
@@ -196,7 +196,7 @@ class XSSModule(BaseModule):
                 proof_url = form.action
                 res = self.scanner._request("POST", form.action, data=data)
                 proof_data = urlencode(data)
-            if res:
+            if res is not None:
                 if self._analyze_reflection(res, base, param, payload, form.method,
                                             proof_url=proof_url, proof_data=proof_data):
                     # Reflected: probe whether the payload was stored. The
@@ -326,7 +326,7 @@ class XSSModule(BaseModule):
         if key in self._confirmed:
             return
         res = self.scanner._request("GET", benign_url)
-        if not res:
+        if res is None:
             return
         context_desc = self._reflection_point(res, payload)
         if context_desc is None:

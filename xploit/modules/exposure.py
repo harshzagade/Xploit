@@ -160,7 +160,7 @@ class ExposureModule(BaseModule):
             if probe_id <= 0:
                 continue
             res = self._fetch(url, param, str(probe_id), method, base_data)
-            if not res or res.status_code not in (200, 201):
+            if res is None or res.status_code not in (200, 201):
                 continue
             probe_text = res.text
             probe_len = len(probe_text)
@@ -252,7 +252,7 @@ class ExposureModule(BaseModule):
     def _check_sensitive_target(self, item) -> None:
         target, path, pattern, name, baseline_len = item
         response = self._probe_file(target)
-        if not response or response.status_code != 200:
+        if response is None or response.status_code != 200:
             return
 
         # Soft-404 guard: some apps return 200 for every path with a generic page.
@@ -293,7 +293,7 @@ class ExposureModule(BaseModule):
     def _check_debug_target(self, item) -> None:
         target, path, pattern, baseline_len = item
         response = self._probe_file(target)
-        if not response or response.status_code != 200:
+        if response is None or response.status_code != 200:
             return
 
         if baseline_len > 0 and abs(len(response.text) - baseline_len) < 500:

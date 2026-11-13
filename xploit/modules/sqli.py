@@ -134,7 +134,7 @@ class SQLInjectionModule(BaseModule):
 
         for payload in payloads:
             res = self._send_payload(url, param, method, payload, base_data, json_body)
-            if not res:
+            if res is None:
                 continue
             res_text = res.text.lower()
             for error in SQL_ERRORS:
@@ -177,7 +177,7 @@ class SQLInjectionModule(BaseModule):
 
         for payload in payloads:
             res = self._send_payload(url, param, method, payload, base_data, json_body)
-            if not res:
+            if res is None:
                 continue
             res_lower = res.text.lower()
             matched = next((e for e in SQL_ERRORS if e in res_lower and e not in baseline_text), "")
@@ -311,7 +311,7 @@ class SQLInjectionModule(BaseModule):
 
         for payload in payloads:
             res = self._send_payload(url, param, method, payload, base_data, json_body)
-            if not res:
+            if res is None:
                 continue
             indicators = ["multiple statements", "syntax near", "expects parameter"]
             text_lower = res.text.lower()

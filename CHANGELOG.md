@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Fixed
+- Error-page responses are no longer silently skipped: `requests.Response.__bool__`
+  is `.ok`, so the modules' `if not res` / `if res` guards discarded every 4xx/5xx
+  page before any check read its body. All response-presence guards in the
+  modules now test `res is None` instead (22 sites across 8 modules, including
+  the positive `if res:` form in the XSS reflection and AUTH-004 enumeration
+  checks, and the status-combined guards in the exposure and sensitive-data
+  modules). A 500 page carrying a SQL error in its body now flags SQLI-001.
+  `tests/test_error_page_responses.py` proves it against a live fixture
+  server (500 + SQL error flags SQLI-001; 500 without a SQL error flags
+  nothing) and fails on the old code. Version 1.21.0 -> 1.22.0.
+
 ### Added
 - WAF fingerprint note: `_build_target_profile` now detects common
   WAF/protection markers (Cloudflare, Akamai, ModSecurity, Sucuri,
