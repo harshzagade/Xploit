@@ -134,7 +134,7 @@ class SQLInjectionModule(BaseModule):
 
         for payload in payloads:
             res = self._send_payload(url, param, method, payload, base_data, json_body)
-            if res is None:
+            if not res:
                 continue
             res_text = res.text.lower()
             for error in SQL_ERRORS:
@@ -149,9 +149,19 @@ class SQLInjectionModule(BaseModule):
             # JSON-body target: the payload rides in a JSON object with the
             # sibling fields at their placeholder values; requests sets
             # Content-Type: application/json for the json= kwarg.
+            # Rotation is deliberately skipped here: a JSON API parses the
+            # body as JSON, so an encoded payload would arrive as the
+            # encoded string itself — no app-side URL-decoding layer exists
+            # to peel it back to the raw payload.
             body = dict(base_data) if base_data else {}
             body[param] = payload
             return self.scanner._request(method, url, json=body)
+        # WAF rotation (opt-in): cycle the payload encoding per host so
+        # consecutive probes never repeat the same encoding twice in a row.
+        # The encoded value is what mutate_query / the form body carry, so
+        # the wire shows the encoded form and the server's single decode
+        # yields the encoded payload the app then decodes.
+        payload, _encoding = self.scanner.rotate_payload(payload, url)
         if method == "GET":
             # Pass sibling form fields so GET forms (action URL with no query
             # string) actually send the payload instead of dropping it.
@@ -177,7 +187,7 @@ class SQLInjectionModule(BaseModule):
 
         for payload in payloads:
             res = self._send_payload(url, param, method, payload, base_data, json_body)
-            if res is None:
+            if not res:
                 continue
             res_lower = res.text.lower()
             matched = next((e for e in SQL_ERRORS if e in res_lower and e not in baseline_text), "")
@@ -311,7 +321,7 @@ class SQLInjectionModule(BaseModule):
 
         for payload in payloads:
             res = self._send_payload(url, param, method, payload, base_data, json_body)
-            if res is None:
+            if not res:
                 continue
             indicators = ["multiple statements", "syntax near", "expects parameter"]
             text_lower = res.text.lower()

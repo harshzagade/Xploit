@@ -2,80 +2,18 @@
 
 ## Unreleased
 
-### Fixed
-- Error-page responses are no longer silently skipped: `requests.Response.__bool__`
-  is `.ok`, so the modules' `if not res` / `if res` guards discarded every 4xx/5xx
-  page before any check read its body. All response-presence guards in the
-  modules now test `res is None` instead (22 sites across 8 modules, including
-  the positive `if res:` form in the XSS reflection and AUTH-004 enumeration
-  checks, and the status-combined guards in the exposure and sensitive-data
-  modules). A 500 page carrying a SQL error in its body now flags SQLI-001.
-  `tests/test_error_page_responses.py` proves it against a live fixture
-  server (500 + SQL error flags SQLI-001; 500 without a SQL error flags
-  nothing) and fails on the old code. Version 1.21.0 -> 1.22.0.
-
 ### Added
-- WAF fingerprint note: `_build_target_profile` now detects common
-  WAF/protection markers (Cloudflare, Akamai, ModSecurity, Sucuri,
-  Imperva, F5 BIG-IP) from response headers (`cf-ray`, `x-akamai-*`,
-  `x-sucuri-*`, `x-iinfo`, `Server` values), protection cookies
-  (`__cfduid`, `cf_clearance`, `incap_ses_*`) and vendor-distinctive
-  block-page text (`xploit/scanner.py`: `detect_waf`, module-level
-  marker tables). Block-page markers are only checked on error
-  responses (status >= 400), so a 200 page merely discussing a WAF
-  cannot false-positive. Detected vendors land in `target_profile`
-  as `waf`/`waf_signals` (JSON) and in the text report's coverage line
-  (`WAF: Cloudflare`). `tests/test_waf_fingerprint.py` covers each
-  vendor via headers/cookies/block pages, the 200-page guard, profile
-  integration and dedupe, and a live fixture-server end-to-end.
-  Version 1.19.0 -> 1.20.0.
-- Multi-target checkpoint files: `--checkpoint`/`--resume` no longer
-  require a single target (`xploit/checkpoint.py`: `target_slug` /
-  `checkpoint_path_for_target`, `xploit/cli.py`: per-target derivation
-  in `_run_multi_target`). A multi-target run writes one checkpoint
-  per target (`scan.json` -> `scan.<target-slug>.json`, slug from
-  host + non-default port + path); `--resume` reads the matching
-  per-target file, scans a target fresh when its file is missing, and
-  reports a finished checkpoint's findings without re-scanning it
-  (`--retest` is skipped for restored results — it needs a live
-  scanner). A corrupt per-target checkpoint is an `error` result for
-  that target only, and the message goes to stderr so piped
-  `--format json` stays parseable. Single-target runs keep using the
-  given path unchanged, so old checkpoints still resume.
-  `tests/test_multitarget_checkpoint.py` covers slug/path derivation,
-  the per-target paths handed to the scanner, missing-resume fresh
-  scans, finished-checkpoint restore without scanning, corrupt
-  checkpoints, and live two-server end-to-end write + resume.
-  Version 1.20.0 -> 1.21.0.
-- JUnit XML output format: `--format junit` renders findings as native
-  CI test results (`xploit/reporting.py`: `render_junit_report` /
-  `render_junit_reports`, stdlib ElementTree) — one testsuite per scan
-  result, one testcase per finding (`xploit.<finding-id>`), HIGH
-  findings as `<failure>` elements with URL/parameter/evidence/CWE/
-  impact/remediation, MEDIUM/LOW/INFO listed as passing testcases so
-  the run stays visible without breaking the build; an unreachable
-  target is a single `<error>` testcase instead of a silent zero-test
-  pass. Multi-target runs produce one testsuite per target in a single
-  `<testsuites>` document. `tests/test_junit_format.py` covers the
-  document shape, the HIGH-only failure mapping, field presence,
-  payload escaping, empty/unreachable targets, multi-target suites and
-  the CLI end-to-end. Version 1.17.0 -> 1.18.0.
-- `--respect-robots`: honor the target's robots.txt Disallow rules while
-  crawling (`WebScanner(respect_robots=True)`; stdlib `RobotFileParser`
-  against the `*` group, fetched once per scan). Disallowed entry points,
-  links and OpenAPI-derived JSON targets are never requested — the crawl
-  skips them instead of fetching and dropping them — and the distinct
-  skipped count is reported as `robots_skipped` on `ScanResult`, in JSON
-  output, and in the text report's coverage line. Off by default: a
-  scanner's job is to probe what robots.txt hides, so honoring it is
-  opt-in for policy-compliant scans. Fail-open: a missing or unfetchable
-  robots.txt disallows nothing. Known limit, documented in the code:
-  CPython's parser applies the first matching rule in file order, not
-  the longest match, so an Allow listed after a broader Disallow does
-  not override it. `tests/test_respect_robots.py` covers the parser
-  surface, the disallow check, live fixture-server crawls (flag on/off,
-  missing robots.txt), the dry-run result field and the CLI end-to-end.
-  Version 1.16.0 -> 1.17.0.
+- WAF bypass payload rotation: `--waf-rotation` cycles the encoding of
+  SQLi payloads per host (new `xploit/encodings.py`: `plain`, `url`,
+  `double-url`, IIS-style `unicode` `%uXXXX`, plus a thread-safe
+  per-host `PayloadRotator` so hosts rotate independently and two
+  threads never draw the same encoding for one host in a row), wired
+  through `WebScanner.rotate_payload()` into the SQLi probe path
+  (GET query + form POST; JSON-body probes stay plain, since a JSON API
+  has no URL-decoding layer to peel an encoding back). Off by default.
+  `tests/test_waf_rotation.py` covers exact encodings, rotation order,
+  per-host independence, the live wire encodings on GET/POST, the
+  plain JSON body, and CLI wiring. Version 1.16.0 -> 1.17.0.
 - HTML report format: `--format html` renders a single self-contained
   HTML document (`xploit/reporting.py`: `render_html_report` /
   `render_html_reports`) — inline CSS, no external resources — for

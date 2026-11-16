@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
-import os
 import sys
 import threading
 import time
@@ -76,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--jitter", type=float, default=0.0,
                         help="add up to N extra random seconds between requests "
                              "(smooths request timing; default: 0)")
+    parser.add_argument("--waf-rotation", action="store_true",
+                        help="cycle the encoding of injection payloads per "
+                             "host (plain, url, double-url, unicode) so the "
+                             "same probe never repeats the same encoding "
+                             "twice in a row against one host; off by "
+                             "default, JSON-body probes stay plain")
     parser.add_argument("--scope-prefix", default="/", help="restrict crawling/checks to a path prefix")
     parser.add_argument("--threads", type=int, default=5,
                         help="concurrency for crawling and probe requests "
@@ -92,17 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exclude", action="append", default=[], metavar="PATTERN",
                         help="skip crawling URLs matching PATTERN (Python regex, matched against "
                              "the full URL); may be repeated")
-    parser.add_argument("--respect-robots", action="store_true",
-                        help="honor robots.txt Disallow rules while crawling "
-                             "(off by default: a scanner's job is to probe "
-                             "what robots.txt hides, so opt in for "
-                             "policy-compliant scans)")
     parser.add_argument("--modules", action="append", default=[], metavar="LIST",
                         help="run only the named scan modules, comma-separated, "
                              "for faster targeted scans (e.g. --modules xss,sqli); "
                              "may be repeated. Valid modules: "
                              + ", ".join(MODULE_REGISTRY))
-    parser.add_argument("--format", choices=("text", "json", "csv", "sarif", "html", "junit"), default="text", help="output format")
+    parser.add_argument("--format", choices=("text", "json", "csv", "sarif", "html"), default="text", help="output format")
     parser.add_argument("--output", metavar="PATH", default=None, help="write the report to a file (ANSI colors stripped)")
     parser.add_argument("--retest", action="store_true", help="re-fire each finding's proof request to confirm it still reproduces (active traffic; skipped in passive mode)")
     parser.add_argument("--dry-run", action="store_true",
@@ -111,15 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
                              "(no scan modules run; for scoping a scan "
                              "before the active phase)")
     parser.add_argument("--checkpoint", metavar="FILE", default=None,
-                        help="write resume checkpoints during the scan; "
-                             "multi-target runs write one file per target "
-                             "(<FILE>.<target-slug>.json); progress is saved "
-                             "after the crawl and after each module")
+                        help="write resume checkpoints during the scan (single-target runs); "
+                             "progress is saved after the crawl and after each module")
     parser.add_argument("--resume", metavar="FILE", default=None,
-                        help="resume an interrupted scan from a checkpoint file; "
-                             "multi-target runs read one file per target "
-                             "(<FILE>.<target-slug>.json); completed modules "
-                             "are skipped, their findings restored, and progress "
+                        help="resume an interrupted scan from a checkpoint file (single-target); "
+                             "completed modules are skipped, their findings restored, and progress "
                              "is written back to this file unless --checkpoint is also given")
     parser.add_argument("--proxy", default=None, metavar="URL",
                         help="route all scan traffic through an HTTP/HTTPS "
@@ -210,8 +206,8 @@ def _build_scanner(args: argparse.Namespace, target_url: str) -> WebScanner:
         resume=getattr(args, "resume", None),
         # getattr: Namespaces built by hand may predate the --dry-run flag.
         dry_run=getattr(args, "dry_run", False),
-        # getattr: same for --respect-robots.
-        respect_robots=getattr(args, "respect_robots", False),
+        # getattr: same for --waf-rotation.
+        waf_rotation=getattr(args, "waf_rotation", False),
         verify=not args.insecure,
     )
     apply_request_overrides(scanner, args.header, args.cookie)
@@ -303,6 +299,13 @@ def run_scan(args: argparse.Namespace) -> int:
         return 2
     if len(targets) == 1:
         return _run_single_target(args, targets[0])
+    # Checkpoints track one target's crawl + module progress, so like
+    # DurbX they are single-target only — a shared file across targets
+    # would mix unrelated scans.
+    if getattr(args, "checkpoint", None) or getattr(args, "resume", None):
+        print(color("error: --checkpoint/--resume support single-target "
+                    "scans only", HIGH, not args.no_color), file=sys.stderr)
+        return 2
     return _run_multi_target(args, targets)
 
 
@@ -332,71 +335,8 @@ def _run_multi_target(args: argparse.Namespace, targets: list[str]) -> int:
         if show_ui:
             with _lock:
                 print(f"  {color('[+]', 'OK', colors)} {_short(target)} — starting")
-        # Per-target checkpoint files (see xploit.checkpoint): in a
-        # multi-target run --checkpoint/--resume name a base path and each
-        # target gets its own <base>.<target-slug>.json file, so scans
-        # never mix. A missing per-target resume file means this target
-        # has no interrupted scan — scan it fresh. A finished per-target
-        # checkpoint means the target already completed: report its
-        # findings without re-scanning (a --retest pass needs a live
-        # scanner, so restored results skip it).
-        target_args = args
-        checkpoint_path = getattr(args, "checkpoint", None)
-        resume_path = getattr(args, "resume", None)
-        if checkpoint_path or resume_path:
-            from .checkpoint import (
-                checkpoint_path_for_target,
-                deserialize_findings,
-                load_checkpoint,
-            )
-            if checkpoint_path:
-                checkpoint_path = checkpoint_path_for_target(
-                    checkpoint_path, target)
-            if resume_path:
-                resume_path = checkpoint_path_for_target(resume_path, target)
-                if not os.path.exists(resume_path):
-                    if show_ui:
-                        with _lock:
-                            print(f"  {color('[+]', 'OK', colors)} "
-                                  f"{_short(target)} — no checkpoint, fresh scan")
-                    resume_path = None
-                else:
-                    try:
-                        payload = load_checkpoint(resume_path)
-                    except (ValueError, OSError) as exc:
-                        with _lock:
-                            # stderr, not stdout: keeps piped --format json
-                            # output parseable.
-                            print(color(f"  [!] {_short(target)}: bad "
-                                        f"checkpoint: {exc}", HIGH, colors),
-                                  file=sys.stderr)
-                        return _error_result(target, "error")
-                    if payload["finished"]:
-                        restored = ScanResult(
-                            target=target,
-                            normalized_target=payload["target"],
-                            started_at="", duration_seconds=0.0,
-                            status="completed", scan_mode=args.mode,
-                            scope_prefix=args.scope_prefix,
-                            completion_percent=100,
-                            checks_run=list(payload["completed_modules"]),
-                            pages_seen=list(payload["crawled"]),
-                            forms_seen=len(payload["forms"]),
-                            findings=deserialize_findings(payload["findings"]),
-                            errors=[],
-                        )
-                        if show_ui:
-                            with _lock:
-                                print(f"  {color('[ok]', 'OK', colors)} "
-                                      f"{_short(target)} — done: "
-                                      f"{len(restored.findings)} findings "
-                                      f"(restored from finished checkpoint)")
-                        return restored
-            target_args = argparse.Namespace(**vars(args))
-            target_args.checkpoint = checkpoint_path
-            target_args.resume = resume_path
         try:
-            scanner = _build_scanner(target_args, target)
+            scanner = _build_scanner(args, target)
         except ValueError as exc:
             with _lock:
                 print(color(f"  [!] {_short(target)}: error: {exc}", HIGH, colors))
@@ -455,9 +395,6 @@ def _run_multi_target(args: argparse.Namespace, targets: list[str]) -> int:
     elif args.format == "html":
         from .reporting import render_html_reports
         content = render_html_reports(ordered)
-    elif args.format == "junit":
-        from .reporting import render_junit_reports
-        content = render_junit_reports(ordered)
     else:
         from .reporting import render_text_report
         content = "\n\n".join(
@@ -650,9 +587,6 @@ def _run_single_target(args: argparse.Namespace, target_url: str) -> int:
     elif args.format == "html":
         from .reporting import render_html_report
         content = render_html_report(result)
-    elif args.format == "junit":
-        from .reporting import render_junit_report
-        content = render_junit_report(result)
     else:
         from .reporting import render_text_report
         content = render_text_report(result, colors=colors,

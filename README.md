@@ -1,7 +1,7 @@
 # Xploit
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Version-1.22.0-blue.svg?style=flat-square">
+  <img src="https://img.shields.io/badge/Version-1.10.0-blue.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Python-3.10%2B-yellow.svg?style=flat-square">
   <img src="https://img.shields.io/badge/License-MIT-green.svg?style=flat-square">
   <img src="https://img.shields.io/badge/Detections-25%2B-brightgreen.svg?style=flat-square">
@@ -40,21 +40,13 @@
     (`$ref` and `allOf` schemas resolve; POST/PUT/PATCH only)
   - Form extraction and parameter analysis
   - Up to 500 pages per scan
-  - Policy-compliant crawling: `--respect-robots` honors robots.txt
-    Disallow rules (off by default — the scanner's job is to probe
-    what robots.txt hides, so opt in for policy-compliant scans)
 
 - **Professional Reporting**
   - Detailed findings with severity ratings (HIGH/MEDIUM/LOW)
   - CWE classifications for all vulnerabilities
   - Evidence, impact assessment, and remediation guidance
-  - Text, JSON, CSV, SARIF, HTML and JUnit output formats (CSV: one row per finding — id, severity, url, parameter, evidence — for spreadsheet pipelines; SARIF 2.1.0: one rule per finding id and one result per finding, for GitHub code scanning; HTML: a single self-contained report with severity-coloured findings, evidence, impact and remediation, for sharing with clients; JUnit: one testsuite per target and one testcase per finding, HIGH findings as test failures so CI fails builds on them)
+  - Text, JSON, CSV, SARIF and HTML output formats (CSV: one row per finding — id, severity, url, parameter, evidence — for spreadsheet pipelines; SARIF 2.1.0: one rule per finding id and one result per finding, for GitHub code scanning; HTML: a single self-contained report with severity-coloured findings, evidence, impact and remediation, for sharing with clients)
   - `--output PATH` saves the report to a file (ANSI colors stripped)
-  - Target fingerprint in every report: stack/DBMS hints plus a WAF
-    note (Cloudflare, Akamai, ModSecurity, Sucuri, Imperva, F5 BIG-IP)
-    detected from response headers, cookies and block pages, so
-    analysts know when findings may have been filtered — shown in the
-    text report's coverage line and as `waf`/`waf_signals` in JSON
 
 - **Evidence-Gated Findings**
   - Every finding passes a provenance gate: `verified` only with replayable proof
@@ -71,7 +63,6 @@
 
 - **CI/CD Integration**
   - JSON output for pipeline integration
-  - JUnit XML output (`--format junit`) so CI fails builds on HIGH findings with native test reporting
   - Quiet mode for scripting
   - Exit code is 1 when any HIGH finding is reported, 0 otherwise
 
@@ -176,6 +167,17 @@ Adds up to 0.3 random extra seconds between requests so scan traffic
 isn't metronomic (fixed intervals are easy for rate-based WAF rules to
 fingerprint).
 
+### Scan a WAF-Protected Target with Payload Rotation
+```bash
+xploit https://target.example --waf-rotation
+```
+Cycles the encoding of SQLi payloads per host (plain, URL-encoded,
+double-URL-encoded, IIS-style `%uXXXX`) so the same probe never repeats
+the same encoding twice in a row against one host — a WAF keying on the
+literal bytes of a known payload misses the re-encoded variant while
+the app decodes it back to the real payload. JSON-body probes stay
+plain (a JSON API has no URL-decoding layer to peel an encoding back).
+
 ### Scope Scan to Specific Path
 ```bash
 xploit https://target.example/api --scope-prefix /api
@@ -206,22 +208,17 @@ is recorded in the text summary ("Modules selected") and JSON report.
 xploit https://target.example --checkpoint scan.json
 xploit https://target.example --resume scan.json
 ```
-`--checkpoint FILE` saves progress after the crawl and after each module.
-If the scan is killed, `--resume FILE` picks it up: completed modules
-are skipped, their findings are restored into the final report, and the
-crawl seeds from the checkpoint's known pages instead of re-running
-robots.txt/sitemap discovery. A checkpoint whose target differs from the
-scan URL, or one already marked finished, fails fast. Progress is written
-back to the `--resume` file unless `--checkpoint` is also given. Multi-target
-runs write one checkpoint file per target — `<FILE>.<target-slug>.json`
-(e.g. `scan.json` over `https://example.com/app` writes
-`scan.example.com-app.json`) — so scans never mix; `--resume` reads the
-matching per-target file, scans a target fresh when its file is missing,
-and reports a target's finished checkpoint without re-scanning it. One
-honest limit: page responses are not persisted, so a resumed scan
-re-fetches crawled pages to rebuild the in-memory page table — what
-resume saves is the discovery phase, completed modules' probe traffic,
-and every finding already recorded.
+`--checkpoint FILE` saves progress after the crawl and after each module
+(single-target runs only). If the scan is killed, `--resume FILE` picks it
+up: completed modules are skipped, their findings are restored into the
+final report, and the crawl seeds from the checkpoint's known pages
+instead of re-running robots.txt/sitemap discovery. A checkpoint whose
+target differs from the scan URL, or one already marked finished, fails
+fast. Progress is written back to the `--resume` file unless `--checkpoint`
+is also given. One honest limit: page responses are not persisted, so a
+resumed scan re-fetches crawled pages to rebuild the in-memory page
+table — what resume saves is the discovery phase, completed modules'
+probe traffic, and every finding already recorded.
 
 ### Dry-Run: List Entry Points Before Probing
 ```bash
@@ -409,6 +406,11 @@ options:
                         minimum delay between requests in seconds
   --jitter JITTER       add up to N extra random seconds between requests
                         (smooths request timing; default: 0)
+  --waf-rotation        cycle the encoding of injection payloads per host
+                        (plain, url, double-url, unicode) so the same probe
+                        never repeats the same encoding twice in a row
+                        against one host; off by default, JSON-body probes
+                        stay plain
   --scope-prefix SCOPE_PREFIX
                         restrict crawling to a path prefix
   --threads THREADS     concurrent crawler workers (default: 5; raise for
@@ -423,13 +425,11 @@ options:
                         fragile targets.
   --exclude PATTERN     skip crawling URLs matching PATTERN (Python regex,
                         matched against the full URL); may be repeated
-  --respect-robots      honor robots.txt Disallow rules while crawling
-                        (off by default)
   --modules LIST        run only the named scan modules, comma-separated,
                         for faster targeted scans (e.g. --modules xss,sqli);
                         may be repeated. Valid modules: general, exposure,
                         data, sqli, xss, cmd, logic, auth, advanced, brute
-  --format {text,json,csv,sarif,html,junit}
+  --format {text,json,csv,sarif,html}
                         output format
   --output PATH         write the report to a file (ANSI colors stripped)
   --retest              re-fire each finding's proof request to confirm it
@@ -439,14 +439,12 @@ options:
                         parameters without sending any probe traffic
                         (no scan modules run)
   --checkpoint FILE     write resume checkpoints during the scan
-                        (multi-target runs write one file per target:
-                        <FILE>.<target-slug>.json); progress is saved
-                        after the crawl and after each module
+                        (single-target runs); progress is saved after the
+                        crawl and after each module
   --resume FILE         resume an interrupted scan from a checkpoint file
-                        (multi-target runs read one file per target);
-                        completed modules are skipped, their findings
-                        restored, and progress is written back to this
-                        file unless --checkpoint is also given
+                        (single-target); completed modules are skipped,
+                        their findings restored, and progress is written
+                        back to this file unless --checkpoint is also given
   --proxy URL           route all scan traffic through an HTTP/HTTPS proxy
                         (e.g. http://127.0.0.1:8080 for a Burp-style local
                         intercept); a bare host:port is treated as
