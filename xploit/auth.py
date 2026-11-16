@@ -8,12 +8,83 @@ scan runs authenticated. Today auth requires a hand-supplied
 Form parsing is stdlib-only (`html.parser`): the scanner's crawl uses
 BeautifulSoup, but login needs just one form, and a stdlib parser keeps
 this module usable without the bs4 dependency.
+
+Static auth (`--auth-cookie` / `--auth-header`) is the other half:
+credentials the operator already holds (a session cookie copied from a
+browser, a Bearer token) are applied to the session directly, scoped
+to the scan target's host for cookies, and recorded as the run's auth
+method so reports show how the scan authenticated.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from urllib.parse import urljoin
+
+
+def parse_auth_cookie(raw: str) -> tuple[str, str]:
+    """Parse one `--auth-cookie` value into a ``(name, value)`` pair.
+
+    Same `name=value` shape as the generic `--cookie` flag, but a
+    dedicated auth credential: blank names fail fast instead of
+    silently sending a nameless cookie.
+    """
+    if "=" not in raw:
+        raise ValueError(f"invalid --auth-cookie {raw!r}; "
+                         "expected 'name=value'")
+    name, value = raw.split("=", 1)
+    name = name.strip()
+    if not name:
+        raise ValueError(f"invalid --auth-cookie {raw!r}; "
+                         "cookie name is required")
+    return name, value
+
+
+def parse_auth_header(raw: str) -> tuple[str, str]:
+    """Parse one `--auth-header` value into a ``(name, value)`` pair.
+
+    Same `Name: value` shape as the generic `--header` flag. A blank
+    name fails fast; the value may itself contain colons (e.g.
+    `Authorization: Bearer a:b` keeps everything after the first).
+    """
+    if ":" not in raw:
+        raise ValueError(f"invalid --auth-header {raw!r}; "
+                         "expected 'Name: value'")
+    name, value = raw.split(":", 1)
+    name = name.strip()
+    if not name:
+        raise ValueError(f"invalid --auth-header {raw!r}; "
+                         "header name is required")
+    return name, value.strip()
+
+
+def apply_static_auth(session, cookies: list[str], headers: list[str],
+                      domain: str | None = None) -> list[str]:
+    """Apply `--auth-cookie` / `--auth-header` credentials to a session.
+
+    Cookies are scoped to `domain` (the scan target's host) when given,
+    so a copied session cookie never leaks to another host the scan
+    might touch; headers ride on every request the session sends.
+    Returns the auth methods applied, in order (``"cookie"`` and/or
+    ``"header"``) — the caller records these as the run's auth method.
+    Raises ValueError on a malformed credential, before anything is
+    applied, so a typo fails fast instead of scanning anonymously.
+    """
+    parsed_cookies = [parse_auth_cookie(c) for c in cookies]
+    parsed_headers = [parse_auth_header(h) for h in headers]
+    methods: list[str] = []
+    for name, value in parsed_cookies:
+        if domain:
+            session.cookies.set(name, value, domain=domain)
+        else:
+            session.cookies.set(name, value)
+    if parsed_cookies:
+        methods.append("cookie")
+    for name, value in parsed_headers:
+        session.headers[name] = value
+    if parsed_headers:
+        methods.append("header")
+    return methods
 
 # Input types that never carry credentials and are skipped when picking
 # the username field (hidden fields are still submitted as-is).

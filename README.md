@@ -187,6 +187,16 @@ literal bytes of a known payload misses the re-encoded variant while
 the app decodes it back to the real payload. JSON-body probes stay
 plain (a JSON API has no URL-decoding layer to peel an encoding back).
 
+### Scan Behind an Authenticated Session
+```bash
+xploit https://target.example --auth-cookie "session=abc123" --auth-header "Authorization: Bearer TOKEN"
+```
+Applies a session cookie copied from a browser (scoped to the target
+host, so it never leaks to another host) and/or an auth header to every
+request. The report records the auth method (`cookie`, `header`, or
+`cookie+header`). Cannot be combined with `--login-url` — one auth
+method per run.
+
 ### Scope Scan to Specific Path
 ```bash
 xploit https://target.example/api --scope-prefix /api
@@ -478,6 +488,15 @@ options:
                         single-target scans only)
   --login-user USER     username for --login-url
   --login-pass PASS     password for --login-url
+  --auth-cookie NAME=VALUE
+                        scan behind an authenticated session: set this
+                        cookie on the session (repeatable; scoped to the
+                        target host). Cannot be combined with --login-url
+  --auth-header NAME: VALUE
+                        scan behind an authenticated session: send this
+                        header on every request (repeatable; e.g.
+                        'Authorization: Bearer TOKEN'). Cannot be combined
+                        with --login-url
   --insecure            disable SSL certificate verification
   --no-color            disable ANSI colors
   --quiet               suppress banner and progress output

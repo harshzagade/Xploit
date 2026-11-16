@@ -148,6 +148,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--login-pass", default=None, metavar="PASS",
                         help="password for --login-url (visible in the "
                              "process list; prefer --cookie for shared shells)")
+    parser.add_argument("--auth-cookie", action="append", default=[],
+                        metavar="NAME=VALUE",
+                        help="scan behind an authenticated session: set this "
+                             "cookie on the session (repeatable; scoped to "
+                             "the target host). Cannot be combined with "
+                             "--login-url")
+    parser.add_argument("--auth-header", action="append", default=[],
+                        metavar="NAME: VALUE",
+                        help="scan behind an authenticated session: send "
+                             "this header on every request (repeatable; e.g. "
+                             "'Authorization: Bearer TOKEN'). Cannot be "
+                             "combined with --login-url")
     parser.add_argument("--insecure", action="store_true", help="disable SSL certificate verification")
     parser.add_argument("--no-color", action="store_true", help="disable ANSI colors")
     parser.add_argument("--quiet", action="store_true", help="suppress banner and progress output")
@@ -223,6 +235,17 @@ def _build_scanner(args: argparse.Namespace, target_url: str) -> WebScanner:
         verify=not args.insecure,
     )
     apply_request_overrides(scanner, args.header, args.cookie)
+    # Static auth (--auth-cookie/--auth-header): applied after the
+    # generic overrides so an auth credential wins on a name clash, and
+    # recorded on the scanner so the result reports the auth method.
+    # getattr: Namespaces built by hand may predate the auth flags.
+    from urllib.parse import urlparse as _urlparse
+    from .auth import apply_static_auth
+    scanner.auth_methods = apply_static_auth(
+        scanner.session,
+        getattr(args, "auth_cookie", None) or [],
+        getattr(args, "auth_header", None) or [],
+        domain=_urlparse(target_url).hostname)
     return scanner
 
 
@@ -271,6 +294,9 @@ def _write_output(args: argparse.Namespace, content: str, colors: bool) -> None:
 def validate_login_args(args: argparse.Namespace) -> str | None:
     """Login flags are all-or-nothing: `--login-url` needs both
     credentials, and credentials without a login URL are meaningless.
+    `--login-url` also conflicts with the static auth flags: one auth
+    method per run, so a login never silently overrides (or is
+    overridden by) a hand-supplied cookie/header.
     Returns an error message, or None when the flags are consistent."""
     given = [getattr(args, "login_url", None),
              getattr(args, "login_user", None),
@@ -280,6 +306,9 @@ def validate_login_args(args: argparse.Namespace) -> str | None:
     if any(v is None for v in given):
         return ("--login-url, --login-user and --login-pass must be given "
                 "together")
+    if getattr(args, "auth_cookie", None) or getattr(args, "auth_header", None):
+        return ("--login-url cannot be combined with --auth-cookie / "
+                "--auth-header (use one auth method per run)")
     return None
 
 
@@ -511,6 +540,7 @@ def _run_single_target(args: argparse.Namespace, target_url: str) -> int:
             print(color(f"error: login failed: {login.message}", HIGH, colors),
                   file=sys.stderr)
             return 2
+        scanner.auth_methods = ["login-form"]
         if not args.quiet and args.format == "text":
             print(f"  {color('[+]', 'OK', colors)} {login.message}")
 

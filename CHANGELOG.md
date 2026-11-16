@@ -15,6 +15,21 @@
   nothing) and fails on the old code. Version 1.21.0 -> 1.22.0.
 
 ### Added
+- Authenticated scanning: `--auth-cookie NAME=VALUE` / `--auth-header
+  "Name: Value"` (repeatable) apply credentials the operator already
+  holds — a session cookie copied from a browser, a Bearer token — to
+  the scan session (`xploit/auth.py`: `parse_auth_cookie` /
+  `parse_auth_header` / `apply_static_auth`; cookies are scoped to the
+  target host so they never leak to another host, malformed values fail
+  fast before any request). The run's auth method (`cookie`, `header`,
+  `cookie+header`, `login-form`, `none`) is recorded on `ScanResult`,
+  carried in JSON reports and shown in the text report header; a
+  successful `--login-url` records `login-form`, and `--login-url`
+  conflicts with the static flags (one auth method per run).
+  `tests/test_static_auth.py` covers parsing, fail-fast validation,
+  live header propagation (including the cookie not being sent to
+  another host), result/JSON/text reporting and the CLI conflict.
+  Version 1.22.0 -> 1.23.0.
 - WAF bypass payload rotation: `--waf-rotation` cycles the encoding of
   SQLi payloads per host (new `xploit/encodings.py`: `plain`, `url`,
   `double-url`, IIS-style `unicode` `%uXXXX`, plus a thread-safe

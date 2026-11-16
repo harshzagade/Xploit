@@ -97,6 +97,8 @@ def render_text_report(result: ScanResult, colors: bool = True,
     # ── Header box ──────────────────────────────────────────────────────
     target   = result.normalized_target
     meta     = f"{result.scan_mode.upper()}  ·  {result.duration_seconds}s  ·  {result.started_at}"
+    if result.auth_method != "none":
+        meta += f"  ·  auth: {result.auth_method}"
     coverage = f"{len(result.pages_seen)} pages  ·  {result.forms_seen} forms discovered"
     if getattr(result, "robots_skipped", 0):
         coverage += f"  ·  {result.robots_skipped} robots.txt-skipped"

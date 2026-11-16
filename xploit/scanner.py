@@ -254,6 +254,10 @@ class ScanResult:
     # --respect-robots: distinct disallowed URLs the crawl considered
     # and skipped. 0 when the flag is off (nothing was ever checked).
     robots_skipped: int = 0
+    # How this run authenticated: "none" (anonymous), "cookie",
+    # "header", "cookie+header", or "login-form". Set from
+    # WebScanner.auth_methods so reports show the auth method.
+    auth_method: str = "none"
 
     def to_dict(self) -> dict:
         """Serialize the result for JSON reports, including the computed
@@ -283,6 +287,7 @@ class ScanResult:
             "retest_summary": self.retest_summary,
             "entry_points": list(self.entry_points),
             "robots_skipped": self.robots_skipped,
+            "auth_method": self.auth_method,
         }
 
 # Registry of scan modules selectable via --modules / WebScanner(modules=...).
@@ -814,6 +819,12 @@ class WebScanner:
         if modules is not None and not self.modules:
             raise ValueError("--modules requires at least one module name")
         self.verify = verify
+        # Auth methods applied to this run's session ("cookie" and/or
+        # "header" from --auth-cookie/--auth-header, "login-form" after a
+        # successful --login-url). Empty means the scan ran anonymously.
+        # Recorded on ScanResult so reports show how the scan
+        # authenticated; set by the CLI after construction.
+        self.auth_methods: list[str] = []
         # WAF-bypass payload rotation (--waf-rotation): when on, injection
         # probes cycle their encoding per host (plain -> url -> double-url
         # -> unicode) so the same probe never repeats the same encoding
@@ -1137,6 +1148,7 @@ class WebScanner:
                 modules=list(self.modules or []),
                 entry_points=self._dry_run_entry_points(),
                 robots_skipped=len(self._robots_skipped),
+                auth_method=self._auth_method_label(),
             )
         self._write_checkpoint(finished=False)
         self._build_target_profile()
@@ -1230,6 +1242,7 @@ class WebScanner:
             modules=list(self.modules or []),
             target_profile=self.target_profile,
             robots_skipped=len(self._robots_skipped),
+            auth_method=self._auth_method_label(),
         )
 
     # Bound for manual redirect following. requests' own default is 30, which
@@ -2170,6 +2183,11 @@ class WebScanner:
         """True when any --exclude pattern matches the full URL."""
         return any(rx.search(url) for rx in self._exclude_res)
 
+    def _auth_method_label(self) -> str:
+        """Auth method for ScanResult: "none", "cookie", "header",
+        "cookie+header", or "login-form"."""
+        return "+".join(self.auth_methods) if self.auth_methods else "none"
+
     def rotate_payload(self, payload: str, url: str | None = None) -> tuple[str, str]:
         """Encode `payload` for the next probe against `url`'s host.
 
@@ -2254,4 +2272,5 @@ class WebScanner:
             modules=list(self.modules or []),
             target_profile=self.target_profile,
             robots_skipped=len(self._robots_skipped),
+            auth_method=self._auth_method_label(),
         )
