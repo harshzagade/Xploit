@@ -83,6 +83,7 @@ class GeneralModule(BaseModule):
     def run(self):
         self._check_headers()
         self._check_sri()
+        self._check_csp_nonce()
         self._check_session_cookies()
         self._check_auth_issues()
         self._check_file_upload()
@@ -219,6 +220,90 @@ class GeneralModule(BaseModule):
                 # key is (id, url, parameter), and two script hosts seen on
                 # the same page would otherwise collapse into one finding.
                 parameter=script_host
+            ))
+
+    def _check_csp_nonce(self):
+        # CSP nonce enforcement: when a page sets Content-Security-Policy
+        # but its effective script-src still lets inline scripts run without
+        # a nonce, an attacker who can inject markup gets script execution
+        # the policy was supposed to prevent. Passive check — it only reads
+        # headers + HTML the crawler already fetched, so it runs in every
+        # mode. A page is flagged only when it actually contains a
+        # non-empty inline <script> (a permissive policy with no inline
+        # scripts is not an exposure). The effective directive is
+        # script-src, falling back to default-src; a policy with neither
+        # does not restrict scripts at all. 'unsafe-inline' counts only
+        # when no nonce-/sha256-/sha384-/sha512- token is present, because
+        # browsers ignore 'unsafe-inline' once a nonce or hash is in play
+        # (same for a nonce-gated policy: matching inline scripts are
+        # legitimate, the rest are blocked, so there is nothing to flag).
+        # Only script-src/default-src are evaluated — script-src-elem and
+        # script-src-attr are out of scope. Findings collapse to one
+        # CSP-001 per host; pages without a CSP header are already covered
+        # by the HDR-CSP missing-policy finding.
+        grouped: dict[str, tuple[str, int, list[str], str]] = {}
+        for page_url, page_res in self.scanner.pages.items():
+            if page_res is None:
+                continue
+            headers = {k.lower(): v for k, v in page_res.headers.items()}
+            csp = headers.get("content-security-policy")
+            if not csp:
+                continue
+            content_type = (headers.get("content-type") or "").lower()
+            if content_type and "text/html" not in content_type:
+                continue
+            html = getattr(page_res, "text", "") or ""
+            if not html:
+                continue
+            inline = [
+                tag for tag in _parse_script_tags(html)
+                if tag["src"] is None and (tag["body"] or "").strip()
+            ]
+            if not inline:
+                continue
+            directives: dict[str, list[str]] = {}
+            for part in csp.split(";"):
+                tokens = part.split()
+                if not tokens:
+                    continue
+                directives[tokens[0].lower()] = [
+                    tok.strip("'\"") for tok in tokens[1:]
+                ]
+            effective = directives.get("script-src", directives.get("default-src"))
+            if effective is None:
+                reason = "CSP sets no script-src or default-src, so inline scripts are unrestricted"
+            elif "unsafe-inline" in effective and not any(
+                tok.startswith(("nonce-", "sha256-", "sha384-", "sha512-"))
+                for tok in effective
+            ):
+                reason = "script-src allows 'unsafe-inline' without a nonce"
+            else:
+                continue
+            host = urlparse(page_url).netloc.lower()
+            if host in grouped:
+                first_url, count, paths, _ = grouped[host]
+                grouped[host] = (first_url, count + 1, paths, reason)
+            else:
+                grouped[host] = (page_url, 1, [], reason)
+            if len(grouped[host][2]) < 5:
+                grouped[host][2].append(urlparse(page_url).path)
+        for host, (first_url, count, paths, reason) in sorted(grouped.items()):
+            sample = sorted(set(paths))[:5]
+            suffix = "…" if len(set(paths)) > 5 else ""
+            self.add_finding(Finding(
+                id="CSP-001",
+                name="Inline Scripts Allowed Without Nonce",
+                category="Content Security Policy",
+                severity=MEDIUM,
+                confidence="High",
+                url=first_url,
+                evidence=(
+                    f"{reason} — {count} page(s) with inline scripts on {host}: "
+                    + ", ".join(sample) + suffix
+                ),
+                impact="Inline scripts run without a nonce, so markup injection on these pages can execute attacker JavaScript despite the Content-Security-Policy.",
+                remediation="Remove 'unsafe-inline' from script-src and give each legitimate inline script a per-response nonce (script-src 'nonce-<random>'), or move inline code into external files.",
+                cwe="CWE-693"
             ))
 
     def _check_session_cookies(self):

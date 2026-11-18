@@ -340,6 +340,7 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 | | **Cloud API Credentials** | AWS/Google/Stripe key patterns |
 | | **Email Addresses (PII)** | Bulk email exposure detection |
 | **Security Misconfiguration** | Missing CSP, HSTS, X-Frame-Options | Header validation |
+| | Inline scripts allowed without a CSP nonce | CSP directive + inline script analysis |
 | | Risky HTTP methods | OPTIONS request testing |
 | | Directory listing | Response pattern matching |
 | **CSRF** | Missing anti-CSRF tokens | POST form analysis |

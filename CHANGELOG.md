@@ -14,6 +14,18 @@
   crawled HTML, so it runs in every mode. `tests/test_sri.py` covers the
   tag parser (quoting/order), the flag/skip rules, the collapse, and the
   passive-mode run. Version 1.23.0 -> 1.24.0.
+- CSP nonce enforcement audit: `GeneralModule._check_csp_nonce()` flags
+  pages whose Content-Security-Policy still lets inline scripts run
+  without a nonce (CSP-001, MEDIUM, CWE-693) — either the effective
+  script-src (falling back to default-src) allows 'unsafe-inline' with
+  no nonce/hash token, or the policy sets no script-src/default-src at
+  all. Only pages that actually contain a non-empty inline script are
+  flagged; nonce- or hash-gated policies and policies that block inline
+  scripts are not. Findings collapse to one row per host. Passive check
+  over already crawled HTML, runs in every mode. `tests/test_csp_nonce.py`
+  covers both flag reasons, the nonce/hash exemptions, the default-src
+  fallback, the collapse, and the passive-mode run.
+  Version 1.24.0 -> 1.25.0.
 
 ### Fixed
 - Error-page responses are no longer silently skipped: `requests.Response.__bool__`
