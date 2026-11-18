@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+- Subresource Integrity verification: `GeneralModule._check_sri()` flags
+  external HTTPS `<script src>` tags loaded without an `integrity`
+  attribute (SRI-001, MEDIUM, CWE-829) — a compromised third-party host
+  could otherwise inject arbitrary JavaScript into the page's origin.
+  Same-host/subdomain scripts, scripts with a (non-empty) integrity
+  attribute, HTTP scripts and inline scripts are not flagged; findings
+  collapse to one row per (page host, script host) with a sample of the
+  offending script URLs in the evidence. Passive check over already
+  crawled HTML, so it runs in every mode. `tests/test_sri.py` covers the
+  tag parser (quoting/order), the flag/skip rules, the collapse, and the
+  passive-mode run. Version 1.23.0 -> 1.24.0.
+
 ### Fixed
 - Error-page responses are no longer silently skipped: `requests.Response.__bool__`
   is `.ok`, so the modules' `if not res` / `if res` guards discarded every 4xx/5xx

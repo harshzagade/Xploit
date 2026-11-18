@@ -347,6 +347,7 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 | | Open Redirect | Redirect parameter testing (standard + bypass forms: protocol-relative, backslash, encoded/double-encoded scheme, null-byte) |
 | **Other** | CORS misconfiguration | CORS header analysis |
 | | Clickjacking | Frame options check |
+| | External scripts without Subresource Integrity | Script tag + integrity attribute analysis |
 | | File upload surfaces | Input type detection |
 
 ---
@@ -521,7 +522,7 @@ xploit/
     ├── injection_advanced.py  # Command Injection, Traversal
     ├── logic_vulnerabilities.py  # CSRF, Open Redirect
     ├── exposure.py    # Information Disclosure, IDOR
-    └── general.py     # Headers, Auth, CORS
+    └── general.py     # Headers, Auth, CORS, SRI
 ```
 
 ---

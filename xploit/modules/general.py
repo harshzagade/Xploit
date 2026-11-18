@@ -1,4 +1,8 @@
 from __future__ import annotations
+
+import re
+from urllib.parse import urljoin, urlparse
+
 from .base import BaseModule
 from ..scanner import Finding, HIGH, MEDIUM, LOW, INFO, PASSIVE, normalize_path
 
@@ -15,7 +19,6 @@ _BINARY_EXTS_FALLBACK = frozenset({
 
 def _ext_is_binary(url: str) -> bool:
     """Return True if the URL path ends with a known binary-asset extension."""
-    from urllib.parse import urlparse
     try:
         path = urlparse(url).path
         segment = path.rsplit("/", 1)[-1]
@@ -24,12 +27,62 @@ def _ext_is_binary(url: str) -> bool:
     except (ValueError, AttributeError):
         return False
 
+
+# --- <script> tag parsing (SRI + CSP-nonce checks) ---------------------------
+# Deliberately regex-based instead of BeautifulSoup: the SRI/CSP checks run
+# over already-crawled page bodies, and a small parser keeps this module free
+# of the bs4 import (the test environment stubs bs4). Attribute order and
+# quoting (double, single, unquoted) are handled; a tag inside an HTML
+# comment or a JS string literal is still matched, which can only add a
+# false positive when the "script" text is not a real element.
+_SCRIPT_TAG_RE = re.compile(
+    r"<script\b([^>]*)>(.*?)</script\s*>", re.IGNORECASE | re.DOTALL
+)
+_SCRIPT_ATTR_RE = re.compile(
+    r"""([A-Za-z_:][\w:.-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))"""
+)
+
+
+def _parse_script_tags(html: str) -> list[dict[str, str | None]]:
+    """Parse <script> elements into {src, integrity, nonce, body} dicts.
+
+    ``src``/``integrity``/``nonce`` are None when the attribute is absent;
+    ``body`` is the raw text between the tags ("" for external scripts).
+    Attribute names are lowercased; an empty ``integrity=""`` stays "" so
+    callers can treat it as missing.
+    """
+    tags: list[dict[str, str | None]] = []
+    for match in _SCRIPT_TAG_RE.finditer(html or ""):
+        attrs: dict[str, str] = {}
+        for attr_match in _SCRIPT_ATTR_RE.finditer(match.group(1)):
+            name = attr_match.group(1).lower()
+            value = next(
+                (g for g in attr_match.groups()[1:] if g is not None), ""
+            )
+            attrs.setdefault(name, value)
+        tags.append({
+            "src": attrs.get("src"),
+            "integrity": attrs.get("integrity"),
+            "nonce": attrs.get("nonce"),
+            "body": match.group(2),
+        })
+    return tags
+
+
+def _is_same_site(script_host: str, page_host: str) -> bool:
+    """True when the script host is the page host or one of its subdomains."""
+    script_host = script_host.lower()
+    page_host = page_host.lower()
+    return script_host == page_host or script_host.endswith("." + page_host)
+
+
 class GeneralModule(BaseModule):
     name = "General Security"
     category = "General"
 
     def run(self):
         self._check_headers()
+        self._check_sri()
         self._check_session_cookies()
         self._check_auth_issues()
         self._check_file_upload()
@@ -101,6 +154,71 @@ class GeneralModule(BaseModule):
                 impact="Version or framework banners help attackers fingerprint the stack and prioritize targeted checks.",
                 remediation="Suppress unnecessary technology/version headers at the application or reverse proxy.",
                 cwe="CWE-200"
+            ))
+
+    def _check_sri(self):
+        # Subresource Integrity: an external <script src> without an
+        # integrity attribute lets a compromised third-party host inject
+        # arbitrary code into every page that loads it. Passive check — it
+        # only reads HTML the crawler already fetched, so it runs in every
+        # mode. Only HTTPS scripts are flagged: an HTTP script is already
+        # trivially tamperable in transit, and SRI is the HTTPS story.
+        # Same-host and subdomain scripts are skipped (first-party code is
+        # the site's own trust boundary, same rule as JsRecon's SRI check).
+        # Findings collapse to one SRI-001 per (page host, script host) so
+        # a page loading ten CDN scripts is one report row, not ten.
+        grouped: dict[tuple[str, str], tuple[str, set[str]]] = {}
+        for page_url, page_res in self.scanner.pages.items():
+            if page_res is None:
+                continue
+            content_type = (page_res.headers.get("Content-Type") or "").lower()
+            if content_type and "text/html" not in content_type:
+                continue
+            html = getattr(page_res, "text", "") or ""
+            if not html:
+                continue
+            page_host = urlparse(page_url).netloc.lower()
+            for tag in _parse_script_tags(html):
+                src = tag["src"]
+                if not src:
+                    continue
+                abs_url = urljoin(page_url, src)
+                parsed = urlparse(abs_url)
+                if parsed.scheme != "https":
+                    continue
+                script_host = parsed.netloc.lower()
+                if not script_host or _is_same_site(script_host, page_host):
+                    continue
+                if (tag["integrity"] or "").strip():
+                    continue
+                key = (page_host, script_host)
+                if key in grouped:
+                    grouped[key][1].add(abs_url)
+                else:
+                    grouped[key] = (page_url, {abs_url})
+        for (page_host, script_host), (first_url, scripts) in sorted(grouped.items()):
+            scripts_sorted = sorted(scripts)
+            sample = scripts_sorted[:5]
+            suffix = "…" if len(scripts_sorted) > 5 else ""
+            self.add_finding(Finding(
+                id="SRI-001",
+                name="External Script Without Subresource Integrity",
+                category="Subresource Integrity",
+                severity=MEDIUM,
+                confidence="High",
+                url=first_url,
+                evidence=(
+                    f"{len(scripts_sorted)} external script(s) from {script_host} "
+                    "loaded without an integrity attribute: "
+                    + ", ".join(sample) + suffix
+                ),
+                impact="A compromise of the third-party host lets an attacker inject arbitrary JavaScript into this site, running in the page's origin with full access to its DOM and session.",
+                remediation="Add an integrity=\"sha384-…\" attribute (plus crossorigin=\"anonymous\") to each external <script> tag, generated from the file you audited.",
+                cwe="CWE-829",
+                # parameter carries the script host: the scanner-wide dedupe
+                # key is (id, url, parameter), and two script hosts seen on
+                # the same page would otherwise collapse into one finding.
+                parameter=script_host
             ))
 
     def _check_session_cookies(self):
