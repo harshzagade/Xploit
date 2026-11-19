@@ -18,6 +18,12 @@ _BINARY_EXTS_FALLBACK = frozenset({
     ".pdf", ".zip", ".gz",
 })
 
+# Technology/version banner headers. _check_headers() reports them per host
+# on normal pages; _check_error_page_headers() compares an error page's
+# copy against the same set.
+_TECH_HEADERS = ("server", "x-powered-by", "x-aspnet-version")
+
+
 def _ext_is_binary(url: str) -> bool:
     """Return True if the URL path ends with a known binary-asset extension."""
     try:
@@ -92,6 +98,7 @@ class GeneralModule(BaseModule):
         if self.scanner.mode != PASSIVE:
             self._check_misconfig()
             self._check_trace_method()
+            self._check_error_page_headers()
             self._check_cors()
 
     def _check_headers(self):
@@ -133,7 +140,7 @@ class GeneralModule(BaseModule):
                 continue
             page_headers = {k.lower(): v for k, v in page_res.headers.items()}
             host = urlparse(page_url).netloc.lower()
-            for header in ("server", "x-powered-by", "x-aspnet-version"):
+            for header in _TECH_HEADERS:
                 value = page_headers.get(header)
                 if not value:
                     continue
@@ -496,6 +503,74 @@ class GeneralModule(BaseModule):
         )
         self.attach_proof(finding, method="TRACE", url=probe_url, marker=token)
         self.add_finding(finding)
+
+    def _check_error_page_headers(self):
+        # Header leak audit on error pages (ERRHDR-001): error pages are
+        # often rendered by a different layer than the app's normal pages
+        # (reverse-proxy default error page, framework error handler), so
+        # they can leak a Server/X-Powered-By banner the app suppresses
+        # everywhere else. Probe a path that cannot exist and compare the
+        # error response's tech headers against the values seen on normal
+        # (2xx) crawled pages for the same host. A header is a leak only
+        # when its error-page value differs from every normal-page value
+        # (or normal pages carry no such header at all) — a banner the
+        # normal pages already disclose is the INFO-SVR/INFO-XPB finding's
+        # job, not this one. A 2xx answer to the probe means the site
+        # serves a catch-all page, so there is no error page to compare.
+        host = urlparse(self.scanner.root).netloc.lower()
+        baseline: dict[str, set[str]] = {}
+        for page_url, page_res in self.scanner.pages.items():
+            if page_res is None:
+                continue
+            if urlparse(page_url).netloc.lower() != host:
+                continue
+            if getattr(page_res, "status_code", 200) >= 300:
+                continue
+            headers = {k.lower(): v for k, v in page_res.headers.items()}
+            for header in _TECH_HEADERS:
+                value = headers.get(header)
+                if value:
+                    baseline.setdefault(header, set()).add(value)
+        probe_url = urljoin(
+            self.scanner.root, "xploit-404-probe-" + secrets.token_hex(8)
+        )
+        res = self.scanner._request("GET", probe_url, quiet=True)
+        if res is None:
+            return
+        if getattr(res, "status_code", 200) < 400:
+            return
+        err_headers = {k.lower(): v for k, v in res.headers.items()}
+        leaks: list[tuple[str, str, list[str]]] = []
+        for header in _TECH_HEADERS:
+            value = err_headers.get(header)
+            if not value:
+                continue
+            if value in baseline.get(header, set()):
+                continue
+            leaks.append((header, value, sorted(baseline.get(header, set()))))
+        if not leaks:
+            return
+        parts = []
+        for header, value, normal in leaks:
+            if normal:
+                parts.append(
+                    f"{header}: {value} (normal pages show: "
+                    + ", ".join(normal) + ")"
+                )
+            else:
+                parts.append(f"{header}: {value} (suppressed on normal pages)")
+        self.add_finding(Finding(
+            id="ERRHDR-001",
+            name="Technology Header Disclosure on Error Page",
+            category="Information Disclosure",
+            severity=LOW,
+            confidence="High",
+            url=probe_url,
+            evidence="; ".join(parts),
+            impact="Error pages disclose server/framework banners that normal pages suppress, giving attackers a version fingerprint for targeted checks.",
+            remediation="Apply the same header-suppression rules to error responses as to normal pages (strip Server/X-Powered-By at the reverse proxy, and serve custom error pages).",
+            cwe="CWE-200",
+        ))
 
     def _check_cors(self):
         import threading

@@ -3,6 +3,21 @@
 ## Unreleased
 
 ### Added
+- Error-page header leak audit: `GeneralModule._check_error_page_headers()`
+  probes a path that cannot exist and flags the error response when it
+  discloses a Server/X-Powered-By/X-AspNet-Version banner the site's
+  normal (2xx) pages suppress or disclose with a different value
+  (ERRHDR-001, LOW, CWE-200) — error pages are often rendered by a
+  different layer (reverse-proxy default page, framework handler) than
+  the app's normal pages. A banner identical to the normal pages' is the
+  INFO-SVR/INFO-XPB finding's job, not this one; a 2xx answer to the
+  probe (catch-all page) or a failed probe flags nothing. Multiple leaks
+  collapse to one finding per host. Runs only in non-passive modes.
+  `tests/test_error_page_headers.py` covers both leak shapes, the
+  same-banner exemption, X-Powered-By, 500 pages, catch-all 2xx, failed
+  probes, cross-host baselines and the passive-mode gate, plus a live
+  end-to-end check against leaking, clean and catch-all fixture servers.
+  Version 1.26.0 -> 1.27.0.
 - HTTP TRACE method detection: `GeneralModule._check_trace_method()` sends
   a real TRACE request to a unique probe path and flags the server when it
   answers 2xx and echoes the request line back (TRACE-001, MEDIUM,

@@ -333,6 +333,7 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 | **Sensitive Data** | API keys in comments | Regex pattern matching |
 | | Config file exposure | Known file probing |
 | | Technology disclosure | Header analysis |
+| | Technology headers leaked on error pages | 404-probe header comparison vs normal pages |
 | | **Credit Card Numbers** | Luhn-validated card patterns |
 | | **Social Security Numbers** | SSN pattern detection |
 | | **Private Keys** | RSA/EC/PGP key patterns |
