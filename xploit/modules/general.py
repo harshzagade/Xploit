@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import secrets
 from urllib.parse import urljoin, urlparse
 
 from .base import BaseModule
@@ -90,6 +91,7 @@ class GeneralModule(BaseModule):
         self._check_clickjacking()
         if self.scanner.mode != PASSIVE:
             self._check_misconfig()
+            self._check_trace_method()
             self._check_cors()
 
     def _check_headers(self):
@@ -454,6 +456,46 @@ class GeneralModule(BaseModule):
                     impact="Writable or reflective HTTP methods appear enabled and usable, which increases exposure to unauthorized content changes or request-based abuse.", 
                     remediation="Disable risky methods.", cwe="CWE-16"
                 ))
+
+    def _check_trace_method(self):
+        # HTTP TRACE echo test (TRACE-001): _check_misconfig() already flags
+        # a server that merely ADVERTISES TRACE in its OPTIONS Allow header
+        # (MISCFG-001). This check proves the method is actually live — it
+        # sends a real TRACE request to a unique path and looks for the
+        # request line echoed back in the response body (RFC 9110: a TRACE
+        # response carries the request message as received). The echo must
+        # contain the method name adjacent to the probe path, so a page
+        # that merely reflects the requested URL (e.g. a 404/debug page)
+        # cannot false-positive. The probe path token is the proof marker,
+        # so a later --retest replay (TRACE to the same URL, no custom
+        # headers) reproduces it exactly.
+        token = "xploit-trace-" + secrets.token_hex(8)
+        probe_url = urljoin(self.scanner.root, token)
+        res = self.scanner._request("TRACE", probe_url, quiet=True)
+        if res is None:
+            return
+        if not 200 <= getattr(res, "status_code", 0) < 300:
+            return
+        body = getattr(res, "text", "") or ""
+        if not re.search(r"TRACE\s+\S*" + re.escape(token), body, re.IGNORECASE):
+            return
+        finding = Finding(
+            id="TRACE-001",
+            name="HTTP TRACE Method Enabled (Cross-Site Tracing)",
+            category="Security Misconfiguration",
+            severity=MEDIUM,
+            confidence="High",
+            url=probe_url,
+            evidence=(
+                f"TRACE {probe_url} returned HTTP {res.status_code} and "
+                "echoed the request line back in the response body"
+            ),
+            impact="An enabled TRACE method lets an attacker read request headers — including cookies and Authorization headers — via cross-site tracing (XST) when combined with a script-injection flaw.",
+            remediation="Disable the TRACE method at the web server (e.g. TraceEnable Off in Apache, or block TRACE at the reverse proxy) and confirm the method returns 405.",
+            cwe="CWE-693",
+        )
+        self.attach_proof(finding, method="TRACE", url=probe_url, marker=token)
+        self.add_finding(finding)
 
     def _check_cors(self):
         import threading

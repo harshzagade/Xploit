@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Added
+- HTTP TRACE method detection: `GeneralModule._check_trace_method()` sends
+  a real TRACE request to a unique probe path and flags the server when it
+  answers 2xx and echoes the request line back (TRACE-001, MEDIUM,
+  CWE-693) — the cross-site tracing exposure. The OPTIONS `Allow` header
+  listing TRACE was already covered by MISCFG-001; this proves the method
+  is actually live. The echo must contain the method name adjacent to the
+  probe path, so a page that merely reflects the requested URL cannot
+  false-positive, and the probe path token is the proof marker, so a
+  `--retest` replay (TRACE to the same URL) reproduces it. Runs only in
+  non-passive modes. `tests/test_trace_method.py` covers the echo,
+  absolute-form echo, 405/501, no-echo, path-reflection, error-status and
+  passive-mode cases, plus a live end-to-end check against echoing and
+  405 fixture servers. Version 1.25.0 -> 1.26.0.
 - Subresource Integrity verification: `GeneralModule._check_sri()` flags
   external HTTPS `<script src>` tags loaded without an `integrity`
   attribute (SRI-001, MEDIUM, CWE-829) — a compromised third-party host
