@@ -3,6 +3,20 @@
 ## Unreleased
 
 ### Added
+- HTTP parameter pollution detection: `LogicVulnerabilityModule._check_parameter_pollution()`
+  sends each query parameter twice and compares three responses (baseline,
+  single-value control, duplicated) — a polluted answer that matches neither
+  single-value answer is flagged (HPP-001, MEDIUM, CWE-235), so first-wins
+  and last-wins servers are correctly not flagged. Divergence uses the same
+  floor as the param-hint pre-pass (status change, or body-length delta above
+  max(64B, 5%)), so a page that merely echoes the query string cannot
+  false-positive on reflection alone. The polluted request is attached as
+  behavioral proof (no marker, so the gate records it as not
+  machine-verifiable rather than verified). `tests/test_parameter_pollution.py`
+  covers first/last/concat/error/reflect behaviors, the per-parameter
+  attribution, failed probes and the no-params case, plus a live check
+  against a real local fixture server over the real `_request` path.
+  Version 1.27.0 -> 1.28.0.
 - Error-page header leak audit: `GeneralModule._check_error_page_headers()`
   probes a path that cannot exist and flags the error response when it
   discloses a Server/X-Powered-By/X-AspNet-Version banner the site's

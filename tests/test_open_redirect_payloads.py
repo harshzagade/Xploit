@@ -180,7 +180,12 @@ def test_payloads_sent_verbatim_not_double_encoded():
 def test_all_six_forms_probed():
     scanner = _make_scanner({})
     LogicVulnerabilityModule(scanner).run()
-    assert len(scanner.requested) == len(OPEN_REDIRECT_PAYLOADS)
+    # Count only the redirect probes: the module also sends the three
+    # parameter-pollution requests (baseline / single / duplicated) for the
+    # same `next` parameter, which are not redirect probes.
+    payloads = {payload for _, payload in OPEN_REDIRECT_PAYLOADS}
+    redirect_probes = [u for u in scanner.requested if _payload_of(u) in payloads]
+    assert len(redirect_probes) == len(OPEN_REDIRECT_PAYLOADS)
 
 
 # --- _redirect_netloc -------------------------------------------------------------
