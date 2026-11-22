@@ -36,6 +36,42 @@ _TLS_EXPIRY_WARNING_DAYS = 30
 # line. A bare mention of "contact" inside prose is not a field.
 _SECURITY_TXT_CONTACT_RE = re.compile(r"(?im)^contact\s*:\s*(.+?)\s*$")
 
+# robots.txt sensitive-path audit (ROBOTS-001): a robots.txt Disallow
+# entry naming an admin/backup/config-style path publishes hidden
+# surface — the file itself is public, so any reader gets the target
+# list. Only Disallow: lines are read; Allow: lines name public
+# content. The segment set is deliberately tight: near-universal
+# entries such as /login, /search, /cart, /tmp or /test are not leaks,
+# so they are not flagged. A bare "Disallow: /" has no segments and
+# never flags. Values are matched segment-wise (split on
+# non-alphanumerics) so "/*.sql$" still matches "sql" while
+# "/configure" does not match "config".
+_ROBOTS_DISALLOW_RE = re.compile(r"(?im)^disallow\s*:\s*(.+?)\s*$")
+_ROBOTS_SENSITIVE_SEGMENTS = frozenset({
+    "admin", "administrator",
+    "backup", "backups", "bak",
+    "config", "configuration",
+    "db", "database", "dump", "dumps", "sql",
+    "private", "internal", "staging",
+    "phpmyadmin", "cpanel", "webmail",
+    "secret", "secrets", "credentials", "passwd", "htpasswd",
+    "console", "manage", "management",
+    "cgi", "git", "svn", "env", "logs", "debug",
+})
+
+
+def _robots_path_is_sensitive(path: str) -> bool:
+    """True when a robots.txt Disallow path names sensitive surface.
+
+    The value is split into lowercase alphanumeric segments, so
+    "/admin/", "/.git/config" and "/*.sql$" all match while "/",
+    "/configure" and "/search" do not.
+    """
+    segments = re.split(r"[^A-Za-z0-9]+", path or "")
+    return any(
+        seg.lower() in _ROBOTS_SENSITIVE_SEGMENTS for seg in segments if seg
+    )
+
 
 def _der_read_tlv(data: bytes, offset: int) -> tuple[int, bytes, int]:
     """Read one DER tag-length-value at ``offset``.
@@ -216,6 +252,7 @@ class GeneralModule(BaseModule):
             self._check_error_page_headers()
             self._check_tls_cert_expiry()
             self._check_security_txt()
+            self._check_robots_txt()
             self._check_cors()
 
     def _check_headers(self):
@@ -805,6 +842,61 @@ class GeneralModule(BaseModule):
                 "the Expires field on a schedule so reports still reach a "
                 "monitored inbox."
             ),
+        ))
+
+    def _check_robots_txt(self):
+        # robots.txt sensitive-path audit (ROBOTS-001, LOW, CWE-200): a
+        # Disallow entry naming an admin/backup/config-style path tells
+        # anyone reading the public file where the hidden surface is, so
+        # the report notes it as one finding per host listing up to five
+        # sensitive paths. A missing file, a non-200 answer, a file with
+        # no sensitive Disallow entries — or a bare "Disallow: /" — flags
+        # nothing. All user-agent groups count: the file is public no
+        # matter which group a rule sits under. Runs only in non-passive
+        # modes: it fetches a URL outside the crawl, like the security.txt
+        # and TRACE probes.
+        url = urljoin(self.scanner.root, "/robots.txt")
+        res = self.scanner._request("GET", url, quiet=True)
+        if res is None:
+            return
+        if getattr(res, "status_code", 0) != 200:
+            return
+        body = getattr(res, "text", "") or ""
+        sensitive: list[str] = []
+        seen: set[str] = set()
+        for raw in _ROBOTS_DISALLOW_RE.findall(body):
+            # Strip a trailing "# comment" before matching or reporting.
+            path = raw.split("#", 1)[0].strip()
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            if _robots_path_is_sensitive(path):
+                sensitive.append(path)
+        if not sensitive:
+            return
+        shown = ", ".join(sensitive[:5])
+        suffix = f" (+{len(sensitive) - 5} more)" if len(sensitive) > 5 else ""
+        self.add_finding(Finding(
+            id="ROBOTS-001",
+            name="Sensitive Paths Disclosed in robots.txt",
+            category="Information Disclosure",
+            severity=LOW,
+            confidence="High",
+            url=url,
+            evidence=(
+                f"robots.txt disallows sensitive path(s): {shown}{suffix}"
+            ),
+            impact=(
+                "Disallow entries naming admin, backup, config or similar "
+                "paths publish the site's hidden surface in a public file, "
+                "giving attackers a ready-made target list."
+            ),
+            remediation=(
+                "Remove sensitive paths from robots.txt — blocking crawlers "
+                "is not access control. Protect admin and backup areas with "
+                "authentication instead, and keep backups outside the web root."
+            ),
+            cwe="CWE-200",
         ))
 
     def _check_cors(self):

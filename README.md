@@ -345,6 +345,7 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 | | Risky HTTP methods | OPTIONS request testing |
 | | HTTP TRACE method enabled (cross-site tracing) | TRACE request echo test |
 | | TLS certificate expired or expiring within 30 days | Leaf certificate notAfter read over a TLS handshake |
+| | Sensitive paths disclosed in robots.txt | robots.txt Disallow audit for admin/backup/config paths |
 | | Directory listing | Response pattern matching |
 | **CSRF** | Missing anti-CSRF tokens | POST form analysis |
 | **Access Control** | IDOR indicators | Predictable ID detection |

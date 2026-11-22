@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Added
+- robots.txt sensitive-path audit: `GeneralModule._check_robots_txt()`
+  fetches `/robots.txt` and flags Disallow entries naming admin, backup,
+  config or similar paths as one LOW finding (ROBOTS-001, CWE-200) — the
+  file is public, so those entries publish the site's hidden surface as
+  a ready-made target list. Matching is segment-wise, so `/*.sql$`,
+  `/.git/` and `/admin/` flag while a bare `Disallow: /`, `/configure`
+  and near-universal entries such as `/login`, `/search` or `/tmp` do
+  not. A missing file, a non-200 answer, or no sensitive entries flags
+  nothing. Runs only in non-passive modes.
+  `tests/test_robots_txt.py` covers the flag/no-flag cases,
+  case-insensitivity, wildcard and dotfile paths, the five-path evidence
+  cap, duplicate lines, failed probes, the passive-mode gate, plus a
+  live end-to-end check against a local HTTP server. Version 1.30.0 -> 1.31.0.
 - security.txt presence check: `GeneralModule._check_security_txt()`
   fetches `/.well-known/security.txt` and notes it as an INFO finding
   (SECTXT-001) when the file is published with a Contact: field, so the
