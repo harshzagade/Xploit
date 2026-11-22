@@ -352,6 +352,7 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 | **Other** | CORS misconfiguration | CORS header analysis |
 | | Clickjacking | Frame options check |
 | | External scripts without Subresource Integrity | Script tag + integrity attribute analysis |
+| | security.txt disclosure channel present | /.well-known/security.txt presence + Contact: check |
 | | File upload surfaces | Input type detection |
 
 ---

@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- security.txt presence check: `GeneralModule._check_security_txt()`
+  fetches `/.well-known/security.txt` and notes it as an INFO finding
+  (SECTXT-001) when the file is published with a Contact: field, so the
+  report records the site's documented disclosure channel. A missing
+  file, a non-200 answer, or a file with no Contact: field flags nothing
+  — without a contact there is no channel to note. Field names match
+  case-insensitively per RFC 9116, and a bare mention of "contact" in
+  prose is not a field. Runs only in non-passive modes.
+  `tests/test_security_txt.py` covers the present/missing/no-contact
+  cases, case-insensitivity, multiple contacts, prose false positives,
+  failed probes and the passive-mode gate. Version 1.29.0 -> 1.30.0.
 - TLS certificate expiry check: `GeneralModule._check_tls_cert_expiry()`
   reads the leaf certificate's notAfter over a raw TLS handshake and flags
   an already-expired certificate (TLS-001, MEDIUM, CWE-295) or one lapsing

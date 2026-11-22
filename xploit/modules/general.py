@@ -31,6 +31,11 @@ _TECH_HEADERS = ("server", "x-powered-by", "x-aspnet-version")
 # this many days; an already-expired certificate is a finding on its own.
 _TLS_EXPIRY_WARNING_DAYS = 30
 
+# security.txt (RFC 9116): a Contact: field line names a disclosure
+# channel. Field names are case-insensitive; the value runs to end of
+# line. A bare mention of "contact" inside prose is not a field.
+_SECURITY_TXT_CONTACT_RE = re.compile(r"(?im)^contact\s*:\s*(.+?)\s*$")
+
 
 def _der_read_tlv(data: bytes, offset: int) -> tuple[int, bytes, int]:
     """Read one DER tag-length-value at ``offset``.
@@ -210,6 +215,7 @@ class GeneralModule(BaseModule):
             self._check_trace_method()
             self._check_error_page_headers()
             self._check_tls_cert_expiry()
+            self._check_security_txt()
             self._check_cors()
 
     def _check_headers(self):
@@ -753,6 +759,52 @@ class GeneralModule(BaseModule):
             impact=impact,
             remediation=remediation,
             cwe="CWE-295",
+        ))
+
+    def _check_security_txt(self):
+        # security.txt presence (SECTXT-001, RFC 9116): a site publishing
+        # /.well-known/security.txt with a Contact: field has a documented
+        # vulnerability-disclosure channel, and the report notes it as an
+        # INFO finding so the analyst knows where reports should go. A
+        # missing file, a non-200 answer, or a file with no Contact: field
+        # flags nothing — without a contact there is no channel to note.
+        # Runs only in non-passive modes: it fetches a URL outside the
+        # crawl, like the TRACE and error-page probes.
+        url = urljoin(self.scanner.root, "/.well-known/security.txt")
+        res = self.scanner._request("GET", url, quiet=True)
+        if res is None:
+            return
+        if getattr(res, "status_code", 0) != 200:
+            return
+        body = getattr(res, "text", "") or ""
+        contacts = [
+            c.strip() for c in _SECURITY_TXT_CONTACT_RE.findall(body) if c.strip()
+        ]
+        if not contacts:
+            return
+        shown = ", ".join(contacts[:3])
+        suffix = f" (+{len(contacts) - 3} more)" if len(contacts) > 3 else ""
+        self.add_finding(Finding(
+            id="SECTXT-001",
+            name="security.txt Disclosure Channel Present",
+            category="Security Policy",
+            severity=INFO,
+            confidence="High",
+            url=url,
+            evidence=(
+                f"security.txt is published at {url} with contact "
+                f"channel(s): {shown}{suffix}"
+            ),
+            impact=(
+                "A published security.txt gives researchers a documented "
+                "channel to report vulnerabilities instead of guessing an "
+                "address."
+            ),
+            remediation=(
+                "Keep security.txt current: review the listed contacts and "
+                "the Expires field on a schedule so reports still reach a "
+                "monitored inbox."
+            ),
         ))
 
     def _check_cors(self):
