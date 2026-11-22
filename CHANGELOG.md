@@ -3,6 +3,21 @@
 ## Unreleased
 
 ### Added
+- TLS certificate expiry check: `GeneralModule._check_tls_cert_expiry()`
+  reads the leaf certificate's notAfter over a raw TLS handshake and flags
+  an already-expired certificate (TLS-001, MEDIUM, CWE-295) or one lapsing
+  within 30 days (TLS-001, INFO) — validating clients refuse expired
+  certificates, so expiry is a real outage risk. The context is
+  unverified (dates are read, never trusted), so self-signed or expired
+  certificates still yield their expiry; the dict form of getpeercert()
+  is empty under CERT_NONE, so the DER form is read and the validity
+  parsed with a stdlib-only TLV walker (`_not_after_from_der`). HTTP
+  targets, healthy certificates and failed handshakes flag nothing.
+  Runs only in non-passive modes. `tests/test_tls_cert_expiry.py` covers
+  the expired/warning/healthy boundaries, the HTTP skip, the
+  non-standard port, the passive-mode gate, the DER parser against a
+  real openssl certificate, plus live end-to-end checks against a local
+  TLS server. Version 1.28.0 -> 1.29.0.
 - HTTP parameter pollution detection: `LogicVulnerabilityModule._check_parameter_pollution()`
   sends each query parameter twice and compares three responses (baseline,
   single-value control, duplicated) — a polluted answer that matches neither

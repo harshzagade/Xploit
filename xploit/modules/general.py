@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import calendar
 import re
 import secrets
+import socket
+import ssl
+from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse
 
 from .base import BaseModule
@@ -22,6 +26,112 @@ _BINARY_EXTS_FALLBACK = frozenset({
 # on normal pages; _check_error_page_headers() compares an error page's
 # copy against the same set.
 _TECH_HEADERS = ("server", "x-powered-by", "x-aspnet-version")
+
+# TLS certificate expiry: warn when the leaf certificate lapses within
+# this many days; an already-expired certificate is a finding on its own.
+_TLS_EXPIRY_WARNING_DAYS = 30
+
+
+def _der_read_tlv(data: bytes, offset: int) -> tuple[int, bytes, int]:
+    """Read one DER tag-length-value at ``offset``.
+
+    Returns (tag, value_bytes, next_offset). Only the short and long
+    definite-length forms are supported — enough for a certificate's
+    outer structure. Raises ValueError on truncation or a bad length.
+    """
+    if offset >= len(data):
+        raise ValueError("truncated DER")
+    tag = data[offset]
+    offset += 1
+    if offset >= len(data):
+        raise ValueError("truncated DER length")
+    length = data[offset]
+    offset += 1
+    if length & 0x80:
+        n = length & 0x7F
+        if n == 0 or n > 4 or offset + n > len(data):
+            raise ValueError("bad DER length")
+        length = int.from_bytes(data[offset:offset + n], "big")
+        offset += n
+    if offset + length > len(data):
+        raise ValueError("truncated DER value")
+    return tag, data[offset:offset + length], offset + length
+
+
+def _not_after_from_der(der: bytes) -> float | None:
+    """Extract notAfter (epoch seconds) from a DER-encoded certificate.
+
+    Walks Certificate -> TBSCertificate -> validity -> notAfter, so no
+    ASN.1 library is needed. UTCTime (tag 0x17) and GeneralizedTime
+    (0x18) are both handled; both are UTC ("Z") in practice for issued
+    certificates, and a numeric offset suffix is ignored. Returns None
+    when the structure is not a certificate.
+    """
+    try:
+        tag, cert, _ = _der_read_tlv(der, 0)
+        if tag != 0x30:
+            return None
+        tag, tbs, _ = _der_read_tlv(cert, 0)
+        if tag != 0x30:
+            return None
+        offset = 0
+        tag, _, offset = _der_read_tlv(tbs, offset)
+        if tag == 0xA0:  # [0] version is optional
+            _, _, offset = _der_read_tlv(tbs, offset)  # serialNumber
+        # serialNumber already consumed above in the version case; in the
+        # no-version case the read above WAS the serialNumber. Either way,
+        # the next two fields are signature and issuer.
+        for _ in range(2):
+            _, _, offset = _der_read_tlv(tbs, offset)
+        tag, validity, _ = _der_read_tlv(tbs, offset)
+        if tag != 0x30:
+            return None
+        _, _, offset = _der_read_tlv(validity, 0)  # notBefore
+        tag, raw, _ = _der_read_tlv(validity, offset)  # notAfter
+        text = raw.decode("ascii")
+        if tag == 0x17:  # UTCTime YYMMDDHHMMSSZ
+            year = int(text[0:2])
+            year += 2000 if year < 50 else 1900
+            rest = text[2:]
+        elif tag == 0x18:  # GeneralizedTime YYYYMMDDHHMMSSZ
+            year = int(text[0:4])
+            rest = text[4:]
+        else:
+            return None
+        month, day, hour, minute, second = (
+            int(rest[i:i + 2]) for i in range(0, 10, 2)
+        )
+        return calendar.timegm(
+            (year, month, day, hour, minute, second, 0, 0, 0)
+        )
+    except (ValueError, IndexError):
+        return None
+
+
+def _fetch_cert_not_after(host: str, port: int, timeout: float) -> float | None:
+    """Return the leaf certificate's notAfter as epoch seconds, or None.
+
+    Connects with an unverified context: the dates are read, never trusted,
+    so an expired or self-signed certificate still yields its expiry
+    instead of failing the handshake. Any connection/handshake failure
+    returns None so the caller flags nothing.
+
+    The dict form of ``getpeercert()`` is empty under CERT_NONE (the
+    handshake retains no verified peer certificate), so the DER form is
+    read and the validity parsed directly.
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            with context.wrap_socket(sock, server_hostname=host) as ssock:
+                der = ssock.getpeercert(binary_form=True)
+    except (OSError, ssl.SSLError):
+        return None
+    if not der:
+        return None
+    return _not_after_from_der(der)
 
 
 def _ext_is_binary(url: str) -> bool:
@@ -99,6 +209,7 @@ class GeneralModule(BaseModule):
             self._check_misconfig()
             self._check_trace_method()
             self._check_error_page_headers()
+            self._check_tls_cert_expiry()
             self._check_cors()
 
     def _check_headers(self):
@@ -570,6 +681,78 @@ class GeneralModule(BaseModule):
             impact="Error pages disclose server/framework banners that normal pages suppress, giving attackers a version fingerprint for targeted checks.",
             remediation="Apply the same header-suppression rules to error responses as to normal pages (strip Server/X-Powered-By at the reverse proxy, and serve custom error pages).",
             cwe="CWE-200",
+        ))
+
+    def _check_tls_cert_expiry(self):
+        # TLS certificate expiry (TLS-001): read the leaf certificate's
+        # notAfter over a raw TLS handshake and flag it when already
+        # expired (MEDIUM — validating clients will refuse the connection)
+        # or lapsing within 30 days (INFO — renewal warning). A healthy
+        # certificate flags nothing. Only HTTPS targets have a certificate
+        # to read; an unreachable host or a handshake failure flags nothing
+        # rather than guessing. Runs only in non-passive modes: it opens a
+        # connection outside the crawl, like the TRACE and error-page
+        # probes. The check never trusts the certificate — the context is
+        # unverified and only the expiry date is read.
+        parsed = urlparse(self.scanner.root)
+        if parsed.scheme.lower() != "https":
+            return
+        host = parsed.hostname
+        if not host:
+            return
+        port = parsed.port or 443
+        not_after = _fetch_cert_not_after(
+            host, port, getattr(self.scanner, "timeout", 10)
+        )
+        if not_after is None:
+            return
+        now = datetime.now(timezone.utc).timestamp()
+        days_left = int((not_after - now) // 86400)
+        expiry = datetime.fromtimestamp(
+            not_after, tz=timezone.utc
+        ).date().isoformat()
+        if days_left < 0:
+            severity, name = MEDIUM, "TLS Certificate Expired"
+            evidence = (
+                f"TLS certificate for {host} expired "
+                f"{-days_left} day(s) ago ({expiry})"
+            )
+            impact = (
+                "Clients that validate certificates will refuse the "
+                "connection, and an expired certificate offers no assurance "
+                "the endpoint is still operated by its owner."
+            )
+            remediation = (
+                "Renew the certificate and install the new one before the "
+                "old one lapses; automate renewal so expiry cannot recur."
+            )
+        elif days_left <= _TLS_EXPIRY_WARNING_DAYS:
+            severity, name = INFO, "TLS Certificate Expiring Soon"
+            evidence = (
+                f"TLS certificate for {host} expires in "
+                f"{days_left} day(s) ({expiry})"
+            )
+            impact = (
+                "The certificate will lapse soon; once expired, validating "
+                "clients will refuse the connection."
+            )
+            remediation = (
+                "Renew the certificate before it expires and confirm the "
+                "new one is served."
+            )
+        else:
+            return
+        self.add_finding(Finding(
+            id="TLS-001",
+            name=name,
+            category="TLS Certificate",
+            severity=severity,
+            confidence="High",
+            url=self.scanner.root,
+            evidence=evidence,
+            impact=impact,
+            remediation=remediation,
+            cwe="CWE-295",
         ))
 
     def _check_cors(self):
