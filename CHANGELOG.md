@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Added
+- Referrer-Policy + Permissions-Policy missing-header checks:
+  `GeneralModule._check_headers()` now flags a missing
+  `Referrer-Policy` (HDR-RP, INFO, CWE-200) and a missing
+  `Permissions-Policy` (HDR-PP, INFO, CWE-693) on the root page,
+  extending the HDR-* family alongside CSP, X-Content-Type-Options
+  and HSTS. A site still sending the legacy `Feature-Policy` header
+  is not flagged for Permissions-Policy, since it has set a feature
+  policy under the old name. `tests/test_missing_security_headers.py`
+  covers the flag/no-flag cases, per-header independence, the legacy
+  header exception, case-insensitive matching, the missing-root-page
+  case, and that the existing CSP/XCTO findings still fire alongside
+  the two new ones. Version 1.31.0 -> 1.32.0.
 - robots.txt sensitive-path audit: `GeneralModule._check_robots_txt()`
   fetches `/robots.txt` and flags Disallow entries naming admin, backup,
   config or similar paths as one LOW finding (ROBOTS-001, CWE-200) — the

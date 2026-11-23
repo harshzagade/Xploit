@@ -264,17 +264,32 @@ class GeneralModule(BaseModule):
             # x-frame-options is intentionally omitted here — _check_clickjacking() covers
             # framing exposure as a MEDIUM finding and avoids a duplicate LOW for the same header.
             "x-content-type-options": ("Missing X-Content-Type-Options", INFO, "CWE-16", "HDR-XCTO"),
+            "referrer-policy": ("Missing Referrer-Policy", INFO, "CWE-200", "HDR-RP"),
+            "permissions-policy": ("Missing Permissions-Policy", INFO, "CWE-693", "HDR-PP"),
         }
         if res.url.startswith("https://"):
             checks["strict-transport-security"] = ("Missing Strict-Transport-Security", LOW, "CWE-319", "HDR-HSTS")
         for h, (name, sev, cwe, fid) in checks.items():
-            if h not in headers:
-                impact = "Browsers receive no server-defined content policy on this response, which weakens mitigation against injected scripts and untrusted resource loading." if h == "content-security-policy" else "Reduced client-side security."
-                self.add_finding(Finding(
-                    id=fid, name=name, category="Insecure HTTP Headers",
-                    severity=sev, confidence="High", url=res.url, evidence=f"Missing {h} header",
-                    impact=impact, remediation=f"Set {h} header.", cwe=cwe
-                ))
+            if h in headers:
+                continue
+            # The legacy Feature-Policy header is the predecessor of
+            # Permissions-Policy: a site still sending it has set a
+            # feature policy, so do not flag the newer name as missing.
+            if h == "permissions-policy" and "feature-policy" in headers:
+                continue
+            if h == "content-security-policy":
+                impact = "Browsers receive no server-defined content policy on this response, which weakens mitigation against injected scripts and untrusted resource loading."
+            elif h == "referrer-policy":
+                impact = "Without a Referrer-Policy the browser sends full URLs, including query strings that may carry tokens, as the Referer header to third parties."
+            elif h == "permissions-policy":
+                impact = "Without a Permissions-Policy the page leaves powerful browser features (camera, microphone, geolocation) available to any embedded content by default."
+            else:
+                impact = "Reduced client-side security."
+            self.add_finding(Finding(
+                id=fid, name=name, category="Insecure HTTP Headers",
+                severity=sev, confidence="High", url=res.url, evidence=f"Missing {h} header",
+                impact=impact, remediation=f"Set {h} header.", cwe=cwe
+            ))
         tech_header_ids = {
             "server": "INFO-SVR",
             "x-powered-by": "INFO-XPB",
