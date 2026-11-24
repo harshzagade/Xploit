@@ -563,6 +563,49 @@ class GeneralModule(BaseModule):
                         cwe="CWE-352"
                     ))
 
+                # __Host- / __Secure- prefix audit (HTTPS only — the
+                # prefixes are meaningless over plain HTTP, and browsers
+                # reject a prefixed cookie set over HTTP outright).
+                if url.startswith("https://") and f"{cookie_name}_prefix" not in seen_cookie_names:
+                    # Attribute values, for the __Host- rules (Domain must
+                    # be absent, Path must be "/").
+                    attr_values = {}
+                    for seg in cookie_str.split(";")[1:]:
+                        seg = seg.strip()
+                        if not seg:
+                            continue
+                        key, _, value = seg.partition("=")
+                        attr_values[key.strip().lower()] = value.strip()
+                    lname = cookie_name.lower()
+                    prefix_problem = None
+                    if lname.startswith("__host-"):
+                        if "secure" not in attr_names:
+                            prefix_problem = "uses the __Host- prefix but is set without the Secure attribute"
+                        elif "domain" in attr_values:
+                            prefix_problem = "uses the __Host- prefix but sets a Domain attribute"
+                        elif attr_values.get("path", "/") != "/":
+                            prefix_problem = "uses the __Host- prefix but sets Path to something other than '/'"
+                    elif lname.startswith("__secure-"):
+                        if "secure" not in attr_names:
+                            prefix_problem = "uses the __Secure- prefix but is set without the Secure attribute"
+                    elif is_session_like:
+                        prefix_problem = "is a session cookie set without the __Host- or __Secure- prefix"
+                    if prefix_problem is not None:
+                        seen_cookie_names.add(f"{cookie_name}_prefix")
+                        self.add_finding(Finding(
+                            id="COOK-004",
+                            name="Session Cookie Missing __Host- / __Secure- Prefix",
+                            category="Insecure Cookie Configuration",
+                            severity=LOW,
+                            confidence="High",
+                            url=url,
+                            evidence=f"Cookie '{cookie_name}' {prefix_problem}.",
+                            parameter=cookie_name,
+                            impact="Without a cookie prefix, a cookie set from a compromised subdomain or over an insecure channel can overwrite the session cookie (cookie tossing), letting an attacker fixate or hijack the session. A misused prefix is silently rejected by browsers, so the cookie the server thinks it set never takes effect.",
+                            remediation="Name session cookies __Host-<name> (with Secure, Path=/ and no Domain) or __Secure-<name> (with Secure) so the browser refuses to accept them from anywhere else.",
+                            cwe="CWE-1004"
+                        ))
+
 
     def _check_auth_issues(self):
         import re

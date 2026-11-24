@@ -327,7 +327,7 @@ Xploit detects **25+ vulnerability types** across OWASP Top 10 categories:
 | | **Username Enumeration** | Response timing/size differences |
 | | **Weak Password Policy** | Policy indicator analysis |
 | | **Session Token in URL** | Parameter analysis |
-| | **Insecure Session Cookies** | Cookie flag validation |
+| | **Insecure Session Cookies** | Cookie flag validation + `__Host-`/`__Secure-` prefix audit |
 | | **Default Credentials Testing** | 40+ credential pairs tested |
 | | **Brute Force Detection** | Smart success/failure analysis |
 | **Sensitive Data** | API keys in comments | Regex pattern matching |

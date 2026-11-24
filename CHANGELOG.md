@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- Cookie __Host- / __Secure- prefix audit: `GeneralModule._check_session_cookies()`
+  now flags a session cookie set over HTTPS without the `__Host-` or
+  `__Secure-` prefix as one LOW finding (COOK-004, CWE-1004), and flags a
+  prefixed cookie that breaks the prefix rules — `__Secure-` without
+  Secure, or `__Host-` without Secure, with a Domain attribute, or with
+  Path other than `/` — since browsers silently reject such cookies.
+  Correctly prefixed cookies, non-session cookies and HTTP pages flag
+  nothing. `tests/test_cookie_prefix.py` covers the flag/no-flag cases,
+  each prefix rule separately, case-insensitive prefix matching, the
+  cookie-value-must-not-fake-a-flag case, and per-name dedup across
+  pages. Version 1.32.0 -> 1.33.0.
 - Referrer-Policy + Permissions-Policy missing-header checks:
   `GeneralModule._check_headers()` now flags a missing
   `Referrer-Policy` (HDR-RP, INFO, CWE-200) and a missing
