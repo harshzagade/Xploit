@@ -3,6 +3,18 @@
 ## Unreleased
 
 ### Added
+- X-HTTP-Method-Override test: `GeneralModule._check_method_override()`
+  now sends a control POST and one override POST per method (PUT, DELETE)
+  to the root URL and flags the server as one MEDIUM finding (MTHD-001,
+  CWE-650) when the override response differs from the control in status
+  AND either names the overridden method (word-boundary match, so
+  "INPUT" cannot fake it) or reaches a 2xx answer the control did not —
+  so a header-echo page or a server that ignores the header flags
+  nothing. `tests/test_method_override.py` covers the flag/no-flag cases,
+  both-methods-honored, the 201-vs-200 case, the echo-page case, and the
+  passive-mode gate, plus a live end-to-end check against a fixture
+  server that honors the override (flagged) and one that ignores it
+  (not flagged). Version 1.34.0 -> 1.35.0.
 - Response cacheability audit: `GeneralModule._check_cacheability()` now
   flags a sensitive page served with a cacheable response as one LOW
   finding (CACHE-001, CWE-524). A page is sensitive when it sets a

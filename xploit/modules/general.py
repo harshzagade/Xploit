@@ -117,6 +117,38 @@ def _response_sets_session_cookie(res) -> bool:
     return False
 
 
+def _override_honored(control, override, method: str) -> bool:
+    """True when the override response proves the server routed the POST as ``method``.
+
+    Both halves of the signal are required. First, the status must change:
+    a server that ignores the header answers the override exactly like
+    the control. Second, the override answer must either name the
+    overridden method — word-boundary match, so "INPUT" or "compute"
+    cannot fake it — while the control answer does not, or reach a 2xx
+    answer the control did not reach (a PUT that creates a resource
+    answers 201 where a POST answers 405), or answer 201/204 where the
+    control answered some other 2xx (a POST returning a page versus a
+    PUT creating a resource). A header-echo page fails the status half;
+    a server that ignores the header fails both.
+    """
+    if control is None or override is None:
+        return False
+    status_c = getattr(control, "status_code", 0)
+    status_o = getattr(override, "status_code", 0)
+    if status_o == status_c:
+        return False
+    body_c = getattr(control, "text", "") or ""
+    body_o = getattr(override, "text", "") or ""
+    method_re = re.compile(r"\b" + re.escape(method) + r"\b")
+    if method_re.search(body_o) and not method_re.search(body_c):
+        return True
+    if 200 <= status_o < 300 and not 200 <= status_c < 300:
+        return True
+    if status_o in (201, 204) and status_c not in (201, 204):
+        return True
+    return False
+
+
 def _der_read_tlv(data: bytes, offset: int) -> tuple[int, bytes, int]:
     """Read one DER tag-length-value at ``offset``.
 
@@ -294,6 +326,7 @@ class GeneralModule(BaseModule):
         if self.scanner.mode != PASSIVE:
             self._check_misconfig()
             self._check_trace_method()
+            self._check_method_override()
             self._check_error_page_headers()
             self._check_tls_cert_expiry()
             self._check_security_txt()
@@ -810,6 +843,52 @@ class GeneralModule(BaseModule):
         )
         self.attach_proof(finding, method="TRACE", url=probe_url, marker=token)
         self.add_finding(finding)
+
+    def _check_method_override(self):
+        # X-HTTP-Method-Override test (MTHD-001): some frameworks let a
+        # POST carry X-HTTP-Method-Override: PUT/DELETE and route the
+        # request as that method, so a client that can only POST can still
+        # reach PUT/DELETE handlers — method confusion that bypasses
+        # method-based access control (a proxy blocking PUT but allowing
+        # POST, for instance). One control POST (no header) and one
+        # override POST per method go to the root URL with an empty body,
+        # so no real handler runs with data; _override_honored() decides
+        # from the response pair. No replayable proof is attached: a
+        # --retest replay (plain POST, no header) cannot reproduce the
+        # override, so the evidence text carries both statuses instead.
+        # Runs only in non-passive modes: it sends requests outside the
+        # crawl, like the TRACE probe.
+        control = self.scanner._request("POST", self.scanner.root, quiet=True)
+        honored: list[str] = []
+        for method in ("PUT", "DELETE"):
+            override = self.scanner._request(
+                "POST", self.scanner.root, quiet=True,
+                headers={"X-HTTP-Method-Override": method},
+            )
+            if _override_honored(control, override, method):
+                honored.append(
+                    f"{method}: control POST -> "
+                    f"{getattr(control, 'status_code', '?')}, override -> "
+                    f"{getattr(override, 'status_code', '?')}"
+                )
+        if not honored:
+            return
+        self.add_finding(Finding(
+            id="MTHD-001",
+            name="HTTP Method Override Honored",
+            category="Security Misconfiguration",
+            severity=MEDIUM,
+            confidence="High",
+            url=self.scanner.root,
+            evidence=(
+                "Server honored X-HTTP-Method-Override (" + "; ".join(honored)
+                + "); the override response differs from the plain POST "
+                "and names or executes the overridden method"
+            ),
+            impact="A client that can only send POST can reach PUT/DELETE handlers, so method-based access controls (PUT blocked at the proxy, POST allowed) are bypassed and state-changing handlers the server meant to restrict become callable.",
+            remediation="Ignore or strip the X-HTTP-Method-Override header at the reverse proxy or framework (disable method-override middleware), and enforce authorization per handler rather than per HTTP method.",
+            cwe="CWE-650",
+        ))
 
     def _check_error_page_headers(self):
         # Header leak audit on error pages (ERRHDR-001): error pages are
