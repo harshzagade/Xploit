@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- Response cacheability audit: `GeneralModule._check_cacheability()` now
+  flags a sensitive page served with a cacheable response as one LOW
+  finding (CACHE-001, CWE-524). A page is sensitive when it sets a
+  session cookie or its path names account-like surface (account,
+  checkout, profile, ...); it is cacheable when Cache-Control says
+  `public`, or carries none of private / no-store / no-cache. A shared
+  cache may then serve one user's authenticated page to the next visitor.
+  Non-sensitive pages and properly private responses flag nothing.
+  `tests/test_cacheability.py` covers the flag/no-flag cases, the
+  public-beats-private case, cookie-value-must-not-fake-sensitive, and
+  per-page dedup. Version 1.33.0 -> 1.34.0.
 - Cookie __Host- / __Secure- prefix audit: `GeneralModule._check_session_cookies()`
   now flags a session cookie set over HTTPS without the `__Host-` or
   `__Secure-` prefix as one LOW finding (COOK-004, CWE-1004), and flags a

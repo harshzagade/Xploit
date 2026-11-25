@@ -73,6 +73,50 @@ def _robots_path_is_sensitive(path: str) -> bool:
     )
 
 
+# Session-cookie name pattern, shared by the cookie audits and the
+# cacheability audit: a response setting one of these names is serving an
+# authenticated page.
+_SESSION_COOKIE_RE = re.compile(
+    r"(?i)(phpsessid|sessionid|sess|sid|jsessionid|aspsessionid|auth_token|remember_token)"
+)
+
+# Response cacheability audit (CACHE-001): path segments that mark a page
+# as sensitive even when it sets no session cookie (an account page behind
+# a bearer token, for instance). A sensitive page is cacheable when its
+# Cache-Control says `public`, or carries none of private / no-store /
+# no-cache — a shared cache may then serve one user's authenticated page
+# to the next visitor.
+_CACHE_SENSITIVE_SEGMENTS = frozenset({
+    "account", "accounts", "profile", "settings", "dashboard", "admin",
+    "checkout", "cart", "orders", "order", "payment", "payments",
+    "billing", "private", "user", "users", "inbox", "messages",
+    "security", "preferences", "wallet", "subscription",
+})
+_CACHE_SAFE_DIRECTIVES = frozenset({"private", "no-store", "no-cache"})
+
+
+def _response_sets_session_cookie(res) -> bool:
+    """True when the response sets a session-like cookie.
+
+    Reads every Set-Cookie line (urllib3 getlist when available, else the
+    single header requests exposes) and tests only the cookie NAME, so a
+    cookie value containing e.g. 'sessionid' cannot fake it.
+    """
+    raw_cookies = res.headers.get("Set-Cookie", "")
+    all_set_cookie = (
+        res.raw.headers.getlist("Set-Cookie")
+        if hasattr(res.raw, "headers") and hasattr(res.raw.headers, "getlist")
+        else ([raw_cookies] if raw_cookies else [])
+    )
+    for cookie_str in all_set_cookie:
+        if not cookie_str:
+            continue
+        name = cookie_str.split(";")[0].split("=")[0].strip()
+        if name and _SESSION_COOKIE_RE.search(name):
+            return True
+    return False
+
+
 def _der_read_tlv(data: bytes, offset: int) -> tuple[int, bytes, int]:
     """Read one DER tag-length-value at ``offset``.
 
@@ -243,6 +287,7 @@ class GeneralModule(BaseModule):
         self._check_sri()
         self._check_csp_nonce()
         self._check_session_cookies()
+        self._check_cacheability()
         self._check_auth_issues()
         self._check_file_upload()
         self._check_clickjacking()
@@ -485,9 +530,8 @@ class GeneralModule(BaseModule):
             ))
 
     def _check_session_cookies(self):
-        import re
         seen_cookie_names: set[str] = set()
-        session_pattern = re.compile(r"(?i)(phpsessid|sessionid|sess|sid|jsessionid|aspsessionid|auth_token|remember_token)")
+        session_pattern = _SESSION_COOKIE_RE
 
         for url, res in self.scanner.pages.items():
             # Check Set-Cookie headers on every response
@@ -606,6 +650,57 @@ class GeneralModule(BaseModule):
                             cwe="CWE-1004"
                         ))
 
+
+    def _check_cacheability(self):
+        # Passive: inspects Cache-Control on pages already crawled, no new
+        # requests. A page is sensitive when it sets a session cookie or
+        # its path names account-like surface; it is cacheable when
+        # Cache-Control says `public`, or carries none of private /
+        # no-store / no-cache. Such a page can be stored by a shared cache
+        # and served to the next visitor — web-cache deception by
+        # misconfiguration rather than by a crafted URL.
+        for url, res in self.scanner.pages.items():
+            if res is None:
+                continue
+            path_segments = {
+                seg.lower()
+                for seg in re.split(r"[^A-Za-z0-9]+", urlparse(url).path or "")
+                if seg
+            }
+            sensitive = bool(
+                path_segments & _CACHE_SENSITIVE_SEGMENTS
+            ) or _response_sets_session_cookie(res)
+            if not sensitive:
+                continue
+            headers = {k.lower(): v for k, v in res.headers.items()}
+            cache_control = headers.get("cache-control", "")
+            directives = {
+                part.strip().split("=")[0].lower()
+                for part in cache_control.split(",")
+                if part.strip()
+            }
+            if "public" in directives:
+                reason = "Cache-Control: public"
+            elif not directives & _CACHE_SAFE_DIRECTIVES:
+                reason = (
+                    "no Cache-Control header"
+                    if not cache_control
+                    else f"Cache-Control: {cache_control} (no private/no-store/no-cache)"
+                )
+            else:
+                continue
+            self.add_finding(Finding(
+                id="CACHE-001",
+                name="Sensitive Page Served With Cacheable Response",
+                category="Insecure Cache Configuration",
+                severity=LOW,
+                confidence="High",
+                url=url,
+                evidence=f"Sensitive page served with {reason}.",
+                impact="A shared or proxy cache may store this authenticated page and serve it to a different user, leaking account data, order history or session state.",
+                remediation="Serve authenticated pages with Cache-Control: private, no-store (or no-cache) and add the same directives to any sensitive path.",
+                cwe="CWE-524"
+            ))
 
     def _check_auth_issues(self):
         import re
