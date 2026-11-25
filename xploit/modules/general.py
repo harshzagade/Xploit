@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import base64
 import calendar
+import json
 import re
 import secrets
 import socket
 import ssl
 from datetime import datetime, timezone
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qsl, urljoin, urlparse
 
 from .base import BaseModule
 from ..scanner import Finding, HIGH, MEDIUM, LOW, INFO, PASSIVE, normalize_path
@@ -93,6 +95,49 @@ _CACHE_SENSITIVE_SEGMENTS = frozenset({
     "security", "preferences", "wallet", "subscription",
 })
 _CACHE_SAFE_DIRECTIVES = frozenset({"private", "no-store", "no-cache"})
+
+
+# JWT in URL (JWT-001): three base64url segments of 4+ characters, so
+# dotted version strings like "1.2.3" never match. Shape alone is not
+# enough — _jwt_alg() also requires the first segment to decode to a
+# JSON object carrying "alg", which is a real JWT header.
+_JWT_SHAPE_RE = re.compile(r"[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}")
+
+
+def _jwt_alg(value: str) -> str | None:
+    """The ``alg`` of the first JWT-shaped token in ``value``, else None.
+
+    A candidate must be three base64url segments of 4+ characters and
+    its first segment must base64url-decode to a JSON object carrying
+    an "alg" key — that is a real JWT header, not a random three-part
+    token. The token itself is never returned or logged: only the
+    algorithm name leaves this function, so reports never carry a
+    bearer token.
+    """
+    if not value:
+        return None
+    for match in _JWT_SHAPE_RE.finditer(value):
+        header_b64 = match.group(0).split(".")[0]
+        try:
+            padded = header_b64 + "=" * (-len(header_b64) % 4)
+            header = json.loads(
+                base64.urlsafe_b64decode(padded).decode("utf-8")
+            )
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if isinstance(header, dict) and isinstance(header.get("alg"), str):
+            return header["alg"]
+    return None
+
+
+def _redact_jwt(value: str) -> str:
+    """Replace every JWT-shaped token in ``value`` with a placeholder.
+
+    The finding is *about* a URL that carries a bearer token, so the
+    URL itself must never reach the report intact — the scanner would
+    reproduce the leak it is flagging. Only the shape is kept.
+    """
+    return _JWT_SHAPE_RE.sub("<jwt-redacted>", value or "")
 
 
 def _response_sets_session_cookie(res) -> bool:
@@ -320,6 +365,7 @@ class GeneralModule(BaseModule):
         self._check_csp_nonce()
         self._check_session_cookies()
         self._check_cacheability()
+        self._check_jwt_in_url()
         self._check_auth_issues()
         self._check_file_upload()
         self._check_clickjacking()
@@ -733,6 +779,58 @@ class GeneralModule(BaseModule):
                 impact="A shared or proxy cache may store this authenticated page and serve it to a different user, leaking account data, order history or session state.",
                 remediation="Serve authenticated pages with Cache-Control: private, no-store (or no-cache) and add the same directives to any sensitive path.",
                 cwe="CWE-524"
+            ))
+
+    def _check_jwt_in_url(self):
+        # JWT in URL (JWT-001): a JWT carried in a query string or a
+        # Location header leaks into server access logs, browser history,
+        # Referer headers and shared links — a bearer token that was
+        # meant for an Authorization header can be replayed by anyone
+        # who sees the URL. Passive: inspects crawled page URLs and
+        # their Location headers, no new requests. A candidate must be
+        # JWT-shaped AND decode to a header carrying "alg" (see
+        # _jwt_alg), so random three-part tokens and version strings are
+        # not flagged. Hits are grouped per (host, parameter) — the same
+        # token repeated across pages is one finding — and the evidence
+        # names the algorithm, never the token itself; the URL stored on
+        # the finding is redacted for the same reason (see _redact_jwt).
+        hits: dict[tuple[str, str, str], list[str]] = {}
+        for url, res in self.scanner.pages.items():
+            host = urlparse(url).netloc.lower()
+            for name, value in parse_qsl(
+                urlparse(url).query, keep_blank_values=True
+            ):
+                alg = _jwt_alg(value)
+                if alg is not None:
+                    hits.setdefault((host, name, alg), []).append(url)
+            if res is None:
+                continue
+            headers = {k.lower(): v for k, v in res.headers.items()}
+            alg = _jwt_alg(headers.get("location", ""))
+            if alg is not None:
+                hits.setdefault((host, "Location", alg), []).append(url)
+        for (host, param, alg), urls in sorted(hits.items()):
+            distinct = sorted(set(urls))
+            # The URL itself carries the token: redact it before it
+            # reaches the finding, or the report reproduces the leak.
+            first_url = _redact_jwt(distinct[0])
+            n = len(distinct)
+            suffix = f" (+{n - 1} more URL(s))" if n > 1 else ""
+            self.add_finding(Finding(
+                id="JWT-001",
+                name="JWT Exposed in URL",
+                category="Information Disclosure",
+                severity=MEDIUM,
+                confidence="High",
+                url=first_url,
+                parameter=param,
+                evidence=(
+                    f"JWT (alg {alg}) in {param} on {host}, first seen on "
+                    f"{first_url}{suffix}"
+                ),
+                impact="JWTs in URLs are written to server access logs, browser history, Referer headers and shared links, so a bearer token meant for an Authorization header can be replayed by anyone who sees the URL.",
+                remediation="Move tokens out of URLs: send them in the Authorization header (or a Secure, HttpOnly, SameSite cookie) and stop putting them in query strings or redirect targets.",
+                cwe="CWE-598",
             ))
 
     def _check_auth_issues(self):

@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- JWT in URL detection: `GeneralModule._check_jwt_in_url()` now flags a
+  JWT carried in a query string or a Location header as one MEDIUM
+  finding per (host, parameter) (JWT-001, CWE-598). A candidate must be
+  three base64url segments of 4+ chars AND decode to a header carrying
+  "alg", so random three-part tokens and version strings flag nothing;
+  the evidence names the algorithm, never the token, and the URL stored
+  on the finding is redacted so the report does not reproduce the leak.
+  `tests/test_jwt_in_url.py` covers the flag/no-flag cases, per-param
+  grouping, and the passive-mode run, plus a live end-to-end check
+  against a fixture server serving a JWT link and a JWT redirect.
+  Version 1.35.0 -> 1.36.0.
 - X-HTTP-Method-Override test: `GeneralModule._check_method_override()`
   now sends a control POST and one override POST per method (PUT, DELETE)
   to the root URL and flags the server as one MEDIUM finding (MTHD-001,
