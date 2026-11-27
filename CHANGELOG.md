@@ -3,6 +3,19 @@
 ## Unreleased
 
 ### Added
+- TLS 1.0/1.1 support audit: `GeneralModule._check_tls_old_versions()`
+  now probes a handshake pinned to each deprecated version and flags the
+  host once as one MEDIUM finding (TLS-002, CWE-327) when it accepts
+  either. The probe pins minimum == maximum to the version under test
+  over an unverified context (the certificate is never trusted, no
+  application data is sent) and drops the client to SECLEVEL=0 first,
+  because OpenSSL 3 at SECLEVEL=2 refuses to even offer TLS 1.0/1.1 —
+  without that the check could never fire on Debian/Ubuntu hosts. A
+  server that refuses both versions, an HTTP target, or a failed probe
+  flags nothing. `tests/test_tls_old_versions.py` covers the flag/no-flag
+  cases, per-version evidence, the passive-mode gate, and live
+  end-to-end checks against a TLS 1.0 server (flagged) and a TLS 1.2
+  server (not flagged). Version 1.36.0 -> 1.37.0.
 - JWT in URL detection: `GeneralModule._check_jwt_in_url()` now flags a
   JWT carried in a query string or a Location header as one MEDIUM
   finding per (host, parameter) (JWT-001, CWE-598). A candidate must be

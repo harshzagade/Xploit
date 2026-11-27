@@ -7,6 +7,7 @@ import re
 import secrets
 import socket
 import ssl
+import warnings
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urljoin, urlparse
 
@@ -270,6 +271,50 @@ def _not_after_from_der(der: bytes) -> float | None:
         return None
 
 
+# TLS 1.0/1.1 support audit (TLS-002): deprecated protocol versions to
+# probe, as (TLSVersion attribute, display label). RFC 8996 deprecated
+# both; PCI DSS has required TLS 1.2+ since 2018. The attributes are
+# resolved lazily (getattr) because accessing TLSVersion.TLSv1 raises a
+# DeprecationWarning on Python 3.12+ and the HAS_TLSv1* flags may be
+# absent on builds that cannot offer the version at all.
+_TLS_OLD_VERSIONS = (("TLSv1", "TLS 1.0"), ("TLSv1_1", "TLS 1.1"))
+
+
+def _tls_version_supported(host: str, port: int, version, timeout: float) -> bool:
+    """True when the server completes a handshake pinned to ``version``.
+
+    The context is pinned to exactly that version (minimum == maximum)
+    and unverified — the certificate is never trusted, only the
+    handshake outcome is read. Any failure (refused handshake, alert,
+    timeout, unreachable host) returns False, which the caller reads as
+    "not supported": a modern server rejecting the old version is the
+    secure outcome, so there is nothing to flag.
+
+    OpenSSL 3 ships at SECLEVEL=2 on Debian/Ubuntu, which refuses to
+    even offer TLS 1.0/1.1 — without dropping the client to SECLEVEL=0
+    the probe could never succeed and the check would silently never
+    fire. The cipher string only widens what the client offers; the
+    verdict still comes from whether the server completes the handshake.
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            context.minimum_version = version
+            context.maximum_version = version
+        try:
+            context.set_ciphers("DEFAULT@SECLEVEL=0")
+        except ssl.SSLError:
+            pass
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            with context.wrap_socket(sock, server_hostname=host):
+                return True
+    except (OSError, ssl.SSLError, ValueError):
+        return False
+
+
 def _fetch_cert_not_after(host: str, port: int, timeout: float) -> float | None:
     """Return the leaf certificate's notAfter as epoch seconds, or None.
 
@@ -375,6 +420,7 @@ class GeneralModule(BaseModule):
             self._check_method_override()
             self._check_error_page_headers()
             self._check_tls_cert_expiry()
+            self._check_tls_old_versions()
             self._check_security_txt()
             self._check_robots_txt()
             self._check_cors()
@@ -1126,6 +1172,61 @@ class GeneralModule(BaseModule):
             impact=impact,
             remediation=remediation,
             cwe="CWE-295",
+        ))
+
+    def _check_tls_old_versions(self):
+        # TLS 1.0/1.1 support audit (TLS-002, MEDIUM, CWE-327): probe a
+        # handshake pinned to each deprecated version and flag the host
+        # once when it accepts either. TLS 1.0 and 1.1 are deprecated by
+        # RFC 8996 — no AEAD ciphers, BEAST/POODLE-era weaknesses — and a
+        # server that still negotiates them lets a downgraded client use
+        # them. A server that refuses both flags nothing; an HTTP target
+        # has no TLS to probe. Runs only in non-passive modes: it opens
+        # connections outside the crawl, like the TLS-expiry probe. The
+        # finding names the accepted versions only — the probe never
+        # sends application data, so no content is exchanged.
+        parsed = urlparse(self.scanner.root)
+        if parsed.scheme.lower() != "https":
+            return
+        host = parsed.hostname
+        if not host:
+            return
+        port = parsed.port or 443
+        timeout = getattr(self.scanner, "timeout", 10)
+        accepted = []
+        for attr, label in _TLS_OLD_VERSIONS:
+            if not getattr(ssl, "HAS_" + attr, True):
+                continue
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                version = getattr(ssl.TLSVersion, attr, None)
+            if version is None:
+                continue
+            if _tls_version_supported(host, port, version, timeout):
+                accepted.append(label)
+        if not accepted:
+            return
+        versions = " and ".join(accepted)
+        self.add_finding(Finding(
+            id="TLS-002",
+            name="Server Accepts Deprecated TLS Versions",
+            category="TLS Configuration",
+            severity=MEDIUM,
+            confidence="High",
+            url=self.scanner.root,
+            evidence=f"Server accepts deprecated TLS version(s): {versions}.",
+            impact=(
+                "TLS 1.0 and 1.1 are deprecated (RFC 8996) and lack modern "
+                "authenticated encryption; a client that can be downgraded "
+                "to them is exposed to BEAST-style and weak-cipher attacks, "
+                "and PCI DSS requires TLS 1.2 or higher."
+            ),
+            remediation=(
+                "Disable TLS 1.0 and 1.1 on the server and set TLS 1.2 as "
+                "the minimum negotiated version; verify no legacy client "
+                "still depends on the old versions first."
+            ),
+            cwe="CWE-327",
         ))
 
     def _check_security_txt(self):
