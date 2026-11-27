@@ -3,6 +3,16 @@
 ## Unreleased
 
 ### Added
+- Directory listing detection: `GeneralModule._check_directory_listing()`
+  now flags crawled pages whose body is an autoindex listing as one LOW
+  finding per host (DIRLIST-001, CWE-548), listing up to five URLs.
+  Apache mod_autoindex and nginx autoindex both emit "<title>Index of
+  /path</title>" and "<h1>Index of /path</h1>", and both markers are
+  required, so a page merely discussing listings in prose flags nothing.
+  Passive — only pages already crawled are inspected. `tests/
+  test_directory_listing.py` covers Apache/nginx bodies, the
+  title-only/h1-only/prose no-flag cases, per-host grouping, and the
+  passive-mode run. Version 1.37.0 -> 1.38.0.
 - TLS 1.0/1.1 support audit: `GeneralModule._check_tls_old_versions()`
   now probes a handshake pinned to each deprecated version and flags the
   host once as one MEDIUM finding (TLS-002, CWE-327) when it accepts

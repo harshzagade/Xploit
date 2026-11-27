@@ -97,6 +97,17 @@ _CACHE_SENSITIVE_SEGMENTS = frozenset({
 })
 _CACHE_SAFE_DIRECTIVES = frozenset({"private", "no-store", "no-cache"})
 
+# Directory listing detection (DIRLIST-001): Apache mod_autoindex and
+# nginx autoindex both emit "<title>Index of /path</title>" and
+# "<h1>Index of /path</h1>". Both markers are required — a page merely
+# discussing listings in prose carries at most one of them.
+_DIRLIST_TITLE_RE = re.compile(
+    r"<title[^>]*>\s*Index of\s+[^<]*</title\s*>", re.IGNORECASE
+)
+_DIRLIST_H1_RE = re.compile(
+    r"<h1[^>]*>\s*Index of\s+[^<]*</h1\s*>", re.IGNORECASE
+)
+
 
 # JWT in URL (JWT-001): three base64url segments of 4+ characters, so
 # dotted version strings like "1.2.3" never match. Shape alone is not
@@ -410,6 +421,7 @@ class GeneralModule(BaseModule):
         self._check_csp_nonce()
         self._check_session_cookies()
         self._check_cacheability()
+        self._check_directory_listing()
         self._check_jwt_in_url()
         self._check_auth_issues()
         self._check_file_upload()
@@ -825,6 +837,54 @@ class GeneralModule(BaseModule):
                 impact="A shared or proxy cache may store this authenticated page and serve it to a different user, leaking account data, order history or session state.",
                 remediation="Serve authenticated pages with Cache-Control: private, no-store (or no-cache) and add the same directives to any sensitive path.",
                 cwe="CWE-524"
+            ))
+
+    def _check_directory_listing(self):
+        # Directory listing detection (DIRLIST-001, LOW, CWE-548): a
+        # crawled page whose body is an autoindex listing publishes the
+        # directory's contents to anyone who asks. Apache mod_autoindex
+        # and nginx autoindex both emit "<title>Index of /path</title>"
+        # and "<h1>Index of /path</h1>"; both markers are required, so a
+        # page merely discussing listings in prose never flags. Passive:
+        # only pages already crawled are inspected, no new requests. One
+        # finding per host, listing up to five URLs.
+        listings: dict[str, list[str]] = {}
+        for url, res in self.scanner.pages.items():
+            if res is None:
+                continue
+            body = getattr(res, "text", "") or ""
+            if not _DIRLIST_TITLE_RE.search(body):
+                continue
+            if not _DIRLIST_H1_RE.search(body):
+                continue
+            host = urlparse(url).netloc.lower()
+            listings.setdefault(host, []).append(url)
+        for host, urls in listings.items():
+            shown = ", ".join(urls[:5])
+            suffix = f" (+{len(urls) - 5} more)" if len(urls) > 5 else ""
+            self.add_finding(Finding(
+                id="DIRLIST-001",
+                name="Directory Listing Exposed",
+                category="Information Disclosure",
+                severity=LOW,
+                confidence="High",
+                url=urls[0],
+                evidence=(
+                    f"Directory listing exposed on {host}: {len(urls)} "
+                    f"page(s) serve an autoindex listing: {shown}{suffix}"
+                ),
+                impact=(
+                    "A directory listing publishes the name of every file "
+                    "in the directory — backups, config fragments, source "
+                    "files — so an attacker can enumerate content the site "
+                    "never links to."
+                ),
+                remediation=(
+                    "Disable directory listings (Apache: Options -Indexes; "
+                    "nginx: remove autoindex on) and return 403/404 for "
+                    "unlinked directories instead."
+                ),
+                cwe="CWE-548",
             ))
 
     def _check_jwt_in_url(self):
