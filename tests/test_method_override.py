@@ -204,5 +204,10 @@ class TestMethodOverrideFindings:
         scanner.pages = {}
         scanner.forms = []
         GeneralModule(scanner).run()
-        assert len(scanner.post_calls) == 3
+        # The override check itself sends 3 POSTs to the root URL; the
+        # fourth POST is the GQL-001 introspection probe to /graphql,
+        # which runs in the same non-passive block.
+        override_calls = [c for c in scanner.post_calls if c[0] == scanner.root]
+        assert len(override_calls) == 3
+        assert len(scanner.post_calls) == 4
         assert [f for f in scanner.findings if f.id == "MTHD-001"]

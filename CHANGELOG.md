@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- GraphQL introspection probe: `GeneralModule._check_graphql_introspection()`
+  now POSTs an `__schema` introspection query to /graphql and flags a
+  200 whose body parses as JSON carrying data.__schema as one MEDIUM
+  finding per host (GQL-001, CWE-200), with the exposed type count in
+  the evidence — a live introspection endpoint hands over the whole API
+  schema. An errors-only answer, a non-JSON body, a response without
+  __schema, or a non-200 status flags nothing. No replayable proof is
+  attached: a --retest replay cannot reproduce the JSON POST body.
+  `tests/test_graphql_introspection.py` covers the flag/no-flag cases,
+  the probe shape, the passive-mode gate, and a live end-to-end run
+  against a local GraphQL fixture server. Version 1.39.0 -> 1.40.0.
 - CSP 'unsafe-eval' audit: `GeneralModule._check_csp_unsafe_eval()`
   now flags pages whose effective script-src (falling back to
   default-src) allows 'unsafe-eval' as one MEDIUM finding per host

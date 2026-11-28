@@ -436,6 +436,7 @@ class GeneralModule(BaseModule):
             self._check_tls_old_versions()
             self._check_security_txt()
             self._check_robots_txt()
+            self._check_graphql_introspection()
             self._check_cors()
 
     def _check_headers(self):
@@ -1461,6 +1462,64 @@ class GeneralModule(BaseModule):
                 "is not access control. Protect admin and backup areas with "
                 "authentication instead, and keep backups outside the web root."
             ),
+            cwe="CWE-200",
+        ))
+
+    def _check_graphql_introspection(self):
+        # GraphQL introspection probe (GQL-001, MEDIUM, CWE-200): a live
+        # __schema query answers with the whole type graph, so an enabled
+        # introspection endpoint leaks the full API schema to anyone who
+        # asks. POST the introspection query to /graphql and flag only a
+        # 200 whose body parses as JSON carrying data.__schema — an
+        # errors-only answer, a non-JSON body, or a response without
+        # __schema flags nothing. No replayable proof is attached: a
+        # --retest replay (plain GET/POST, no JSON body) cannot reproduce
+        # the query, so the evidence carries the exposed type count
+        # instead. Runs only in non-passive modes: it sends a request
+        # outside the crawl, like the robots.txt and TRACE probes.
+        url = urljoin(self.scanner.root, "/graphql")
+        res = self.scanner._request(
+            "POST", url, quiet=True,
+            json={"query": "{ __schema { types { name } } }"},
+        )
+        if res is None:
+            return
+        if getattr(res, "status_code", 0) != 200:
+            return
+        try:
+            payload = json.loads(getattr(res, "text", "") or "")
+        except (ValueError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        data = payload.get("data")
+        if not isinstance(data, dict):
+            return
+        schema = data.get("__schema")
+        if not isinstance(schema, dict):
+            return
+        types = schema.get("types")
+        type_count = len(types) if isinstance(types, list) else 0
+        names = [
+            t["name"] for t in types[:3]
+            if isinstance(t, dict) and t.get("name")
+        ] if isinstance(types, list) else []
+        evidence = (
+            f"GraphQL introspection is enabled at /graphql: the __schema "
+            f"query returned {type_count} type(s)"
+        )
+        if names:
+            evidence += f" (e.g. {', '.join(names)})"
+        self.add_finding(Finding(
+            id="GQL-001",
+            name="GraphQL Introspection Enabled",
+            category="Information Disclosure",
+            severity=MEDIUM,
+            confidence="High",
+            url=url,
+            evidence=evidence,
+            impact="An enabled introspection endpoint hands over the full GraphQL schema — every type, field, and argument — letting an attacker map the whole API surface, including mutations and admin operations, without any prior knowledge.",
+            remediation="Disable introspection in production (most servers offer an introspection: false / disable-introspection option), or gate the /graphql endpoint behind authentication so only trusted clients can query the schema.",
             cwe="CWE-200",
         ))
 
