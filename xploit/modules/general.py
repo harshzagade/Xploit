@@ -419,6 +419,7 @@ class GeneralModule(BaseModule):
         self._check_headers()
         self._check_sri()
         self._check_csp_nonce()
+        self._check_csp_unsafe_eval()
         self._check_session_cookies()
         self._check_cacheability()
         self._check_directory_listing()
@@ -663,6 +664,79 @@ class GeneralModule(BaseModule):
                 ),
                 impact="Inline scripts run without a nonce, so markup injection on these pages can execute attacker JavaScript despite the Content-Security-Policy.",
                 remediation="Remove 'unsafe-inline' from script-src and give each legitimate inline script a per-response nonce (script-src 'nonce-<random>'), or move inline code into external files.",
+                cwe="CWE-693"
+            ))
+
+    def _check_csp_unsafe_eval(self):
+        # CSP 'unsafe-eval' audit: when a page's effective script-src
+        # allows 'unsafe-eval', eval() / new Function() / string
+        # setTimeout() can run attacker-controlled strings as code, so a
+        # single injection that reaches a string sink becomes code
+        # execution even when inline scripts are nonce-gated. Unlike
+        # 'unsafe-inline', a nonce or hash token does NOT neutralize
+        # 'unsafe-eval' — browsers evaluate the two keywords
+        # independently, so a nonce-gated policy that still lists
+        # 'unsafe-eval' is flagged. Passive check — it only reads headers
+        # + HTML the crawler already fetched, so it runs in every mode.
+        # A page is flagged only when it actually contains a <script>
+        # (inline or external — eval is callable from any script, not
+        # just inline ones); a scriptless page has no eval surface. The
+        # effective directive is script-src, falling back to default-src;
+        # a policy with neither does not restrict scripts at all, and
+        # that case is already covered by CSP-001. Findings collapse to
+        # one CSP-002 per host; pages without a CSP header are already
+        # covered by the HDR-CSP missing-policy finding.
+        grouped: dict[str, tuple[str, int, list[str]]] = {}
+        for page_url, page_res in self.scanner.pages.items():
+            if page_res is None:
+                continue
+            headers = {k.lower(): v for k, v in page_res.headers.items()}
+            csp = headers.get("content-security-policy")
+            if not csp:
+                continue
+            content_type = (headers.get("content-type") or "").lower()
+            if content_type and "text/html" not in content_type:
+                continue
+            html = getattr(page_res, "text", "") or ""
+            if not html:
+                continue
+            if not _parse_script_tags(html):
+                continue
+            directives: dict[str, list[str]] = {}
+            for part in csp.split(";"):
+                tokens = part.split()
+                if not tokens:
+                    continue
+                directives[tokens[0].lower()] = [
+                    tok.strip("'\"") for tok in tokens[1:]
+                ]
+            effective = directives.get("script-src", directives.get("default-src"))
+            if effective is None or "unsafe-eval" not in effective:
+                continue
+            host = urlparse(page_url).netloc.lower()
+            if host in grouped:
+                first_url, count, paths = grouped[host]
+                grouped[host] = (first_url, count + 1, paths)
+            else:
+                grouped[host] = (page_url, 1, [])
+            if len(grouped[host][2]) < 5:
+                grouped[host][2].append(urlparse(page_url).path)
+        for host, (first_url, count, paths) in sorted(grouped.items()):
+            sample = sorted(set(paths))[:5]
+            suffix = "…" if len(set(paths)) > 5 else ""
+            self.add_finding(Finding(
+                id="CSP-002",
+                name="CSP Allows 'unsafe-eval'",
+                category="Content Security Policy",
+                severity=MEDIUM,
+                confidence="High",
+                url=first_url,
+                evidence=(
+                    f"script-src allows 'unsafe-eval' — {count} page(s) with scripts on {host}: "
+                    + ", ".join(sample) + suffix
+                ),
+                impact="eval() and new Function() can execute attacker-controlled strings as code, so a single injection reaching a string sink becomes code execution even when inline scripts are nonce-gated.",
+                remediation="Remove 'unsafe-eval' from script-src and replace eval() / new Function() / string setTimeout() with JSON.parse, direct function references, or precompiled code.",
                 cwe="CWE-693"
             ))
 

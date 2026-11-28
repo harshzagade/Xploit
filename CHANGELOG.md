@@ -3,6 +3,22 @@
 ## Unreleased
 
 ### Added
+- CSP 'unsafe-eval' audit: `GeneralModule._check_csp_unsafe_eval()`
+  now flags pages whose effective script-src (falling back to
+  default-src) allows 'unsafe-eval' as one MEDIUM finding per host
+  (CSP-002, CWE-693), because eval() / new Function() / string
+  setTimeout() turn a single string-sink injection into code execution
+  even when inline scripts are nonce-gated. Unlike 'unsafe-inline', a
+  nonce or hash token does NOT neutralize 'unsafe-eval' — browsers
+  evaluate the two keywords independently — so nonce-gated policies
+  that still list it are flagged. A page is flagged only when it
+  actually contains a <script> (inline or external, since eval is
+  callable from any script); a policy with no script-src or
+  default-src stays CSP-001's case, and pages without a CSP header
+  stay HDR-CSP's. Passive — only pages already crawled are inspected.
+  `tests/test_csp_unsafe_eval.py` covers the flag/no-flag cases, the
+  nonce-still-flags distinction, the default-src fallback, per-host
+  grouping, and the passive-mode run. Version 1.38.0 -> 1.39.0.
 - Directory listing detection: `GeneralModule._check_directory_listing()`
   now flags crawled pages whose body is an autoindex listing as one LOW
   finding per host (DIRLIST-001, CWE-548), listing up to five URLs.
