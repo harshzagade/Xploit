@@ -28,7 +28,7 @@ class ExposureModule(BaseModule):
     SENSITIVE_FILES = {
         "/.env": (r"(?i)(DB_|DATABASE_URL|APP_KEY|SECRET|API[_-]?KEY|PASSWORD|TOKEN)", "Environment File Exposure"),
         "/.git/config": (r"(?i)(\[core\]|\[remote )", "Git Repository Metadata Exposure"),
-        "/.git/head": (r"(?i)ref:", "Git HEAD Disclosure"),
+        "/.git/HEAD": (r"(?i)\Aref:", "Git HEAD Disclosure"),
         "/.svn/entries": (r"(?i)svn:", "Subversion Metadata Exposure"),
         "/.dockerignore": (r"(?i)(node_modules|\.git|env)", "Docker Metadata Disclosure"),
         "/.htaccess": (r"(?i)(RewriteEngine|AuthType)", "Apache Config Disclosure"),

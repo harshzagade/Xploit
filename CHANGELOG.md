@@ -3,6 +3,17 @@
 ## Unreleased
 
 ### Added
+- /.git/HEAD exposure fix: `ExposureModule.SENSITIVE_FILES` probed the
+  lowercase /.git/head with an unanchored `ref:` pattern, so it missed
+  the file on case-sensitive servers and could match "ref:" buried in
+  prose. The probe now asks for the real /.git/HEAD path and anchors
+  the pattern to the start of the body (`\Aref:`); the finding stays
+  DATA-001 "Git HEAD Disclosure" (HIGH, CWE-200) — no duplicate
+  finding. `tests/test_sensitive_files.py` is the first test coverage
+  for the sensitive-files probe: the uppercase path, the case-sensitive
+  server gap, the anchored pattern, the passive-mode gate, and a live
+  end-to-end run against a local fixture server. Version 1.40.0 ->
+  1.41.0.
 - GraphQL introspection probe: `GeneralModule._check_graphql_introspection()`
   now POSTs an `__schema` introspection query to /graphql and flags a
   200 whose body parses as JSON carrying data.__schema as one MEDIUM
